@@ -1,0 +1,6 @@
+{
+  "name": "PSNA Connect",
+  "description": "Role-based campus and hostel portal for PSNA College of Engineering and Technology, Dindigul.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

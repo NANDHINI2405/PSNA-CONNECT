@@ -1,0 +1,539 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function userDocPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(userDocPath(request.auth.uid));
+    }
+
+    function currentUserRole() {
+      return get(userDocPath(request.auth.uid)).data;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && request.auth.token.email == 'nandyviji2407@gmail.com';
+    }
+
+    function isManagement() {
+      return isBootstrappedAdmin() || (hasUserProfile() && currentUserRole().role == 'management');
+    }
+
+    function isStaff() {
+      return isManagement() || (hasUserProfile() && currentUserRole().role == 'staff');
+    }
+
+    function isWarden() {
+      return isManagement() || (hasUserProfile() && currentUserRole().role == 'staff' && currentUserRole().isWarden == true);
+    }
+
+    function isHostelResident() {
+      return isWarden() || isManagement() || (hasUserProfile() && currentUserRole().isHostel == true);
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'name', 'role', 'isHostel', 'isWarden', 'department'])
+        && data.keys().hasOnly(['uid', 'name', 'role', 'isHostel', 'isWarden', 'department', 'className', 'registerNumber', 'roomNumber', 'block', 'hostelStatus', 'requestedRole', 'createdAt'])
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.role in ['student', 'staff', 'management']
+        && data.isHostel is bool
+        && data.isWarden is bool
+        && data.department is string && data.department.size() <= 80
+        && (!('className' in data) || (data.className is string && data.className.size() <= 40))
+        && (!('registerNumber' in data) || (data.registerNumber is string && data.registerNumber.size() <= 32))
+        && (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 16))
+        && (!('block' in data) || (data.block is string && data.block.size() <= 32))
+        && (!('hostelStatus' in data) || (data.hostelStatus in ['In', 'Out', 'Leave']))
+        && (!('requestedRole' in data) || (data.requestedRole in ['student', 'hostel_resident', 'staff', 'warden', 'management']))
+        && (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
+    }
+
+    function isValidUserPrivate(data) {
+      return data.keys().hasAll(['uid', 'email'])
+        && data.keys().hasOnly(['uid', 'email', 'phone', 'guardianName', 'guardianPhone', 'address', 'bloodGroup', 'medicalNotes', 'allergies', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() <= 120
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
+        && (!('guardianName' in data) || (data.guardianName is string && data.guardianName.size() <= 100))
+        && (!('guardianPhone' in data) || (data.guardianPhone is string && data.guardianPhone.size() <= 30))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 300))
+        && (!('bloodGroup' in data) || (data.bloodGroup is string && data.bloodGroup.size() <= 10))
+        && (!('medicalNotes' in data) || (data.medicalNotes is string && data.medicalNotes.size() <= 500))
+        && (!('allergies' in data) || (data.allergies is string && data.allergies.size() <= 200))
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
+    }
+
+    function isValidAttendanceSession(data) {
+      return data.keys().hasAll(['id', 'staffUid', 'subjectCode', 'subjectName', 'className', 'currentToken', 'active'])
+        && data.keys().hasOnly(['id', 'staffUid', 'staffName', 'subjectCode', 'subjectName', 'className', 'department', 'currentToken', 'tokenIssuedAt', 'expiresAt', 'campusLat', 'campusLng', 'radiusMeters', 'active'])
+        && isValidId(data.id)
+        && isValidId(data.staffUid)
+        && data.subjectCode is string && data.subjectCode.size() <= 20
+        && data.subjectName is string && data.subjectName.size() <= 100
+        && data.className is string && data.className.size() <= 40
+        && data.currentToken is string && data.currentToken.size() <= 64
+        && data.active is bool
+        && (!('staffName' in data) || (data.staffName is string && data.staffName.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('tokenIssuedAt' in data) || data.tokenIssuedAt is number)
+        && (!('expiresAt' in data) || data.expiresAt is number)
+        && (!('campusLat' in data) || data.campusLat is number)
+        && (!('campusLng' in data) || data.campusLng is number)
+        && (!('radiusMeters' in data) || data.radiusMeters is number);
+    }
+
+    function isValidAttendanceRecord(data) {
+      return data.keys().hasAll(['id', 'studentUid', 'subjectCode', 'date', 'status'])
+        && data.keys().hasOnly(['id', 'studentUid', 'studentName', 'registerNumber', 'className', 'subjectCode', 'subjectName', 'date', 'status', 'sessionId', 'markedVia', 'markedAt'])
+        && isValidId(data.id)
+        && isValidId(data.studentUid)
+        && data.subjectCode is string && data.subjectCode.size() <= 20
+        && data.date is string && data.date.size() <= 20
+        && data.status in ['Present', 'Absent']
+        && (!('studentName' in data) || (data.studentName is string && data.studentName.size() <= 100))
+        && (!('registerNumber' in data) || (data.registerNumber is string && data.registerNumber.size() <= 32))
+        && (!('className' in data) || (data.className is string && data.className.size() <= 40))
+        && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 100))
+        && (!('sessionId' in data) || (data.sessionId is string && data.sessionId.size() <= 128))
+        && (!('markedVia' in data) || (data.markedVia in ['QR', 'Manual', 'Seed']))
+        && (!('markedAt' in data) || (data.markedAt is string && data.markedAt.size() <= 40));
+    }
+
+    function isValidStaffCheckin(data) {
+      return data.keys().hasAll(['id', 'staffUid', 'date', 'status'])
+        && data.keys().hasOnly(['id', 'staffUid', 'staffName', 'department', 'date', 'status', 'checkinTime', 'distanceMeters'])
+        && isValidId(data.id)
+        && isValidId(data.staffUid)
+        && data.date is string && data.date.size() <= 20
+        && data.status in ['Present', 'Absent']
+        && (!('staffName' in data) || (data.staffName is string && data.staffName.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('checkinTime' in data) || (data.checkinTime is string && data.checkinTime.size() <= 40))
+        && (!('distanceMeters' in data) || data.distanceMeters is number);
+    }
+
+    function isValidHostelRoom(data) {
+      return data.keys().hasAll(['id', 'roomNumber', 'block', 'capacity'])
+        && data.keys().hasOnly(['id', 'roomNumber', 'block', 'floor', 'capacity', 'occupantUids'])
+        && isValidId(data.id)
+        && data.roomNumber is string && data.roomNumber.size() <= 16
+        && data.block is string && data.block.size() <= 32
+        && data.capacity is number && data.capacity >= 1 && data.capacity <= 6
+        && (!('floor' in data) || (data.floor is string && data.floor.size() <= 20))
+        && (!('occupantUids' in data) || (data.occupantUids is list && data.occupantUids.size() <= 6 && (data.occupantUids.size() == 0 || data.occupantUids[0] is string)));
+    }
+
+    function isValidHostelMenu(data) {
+      return data.keys().hasAll(['day', 'breakfast', 'lunch', 'snacks', 'dinner'])
+        && data.keys().hasOnly(['day', 'breakfast', 'breakfastTime', 'breakfastReady', 'lunch', 'lunchTime', 'lunchReady', 'snacks', 'snacksTime', 'snacksReady', 'dinner', 'dinnerTime', 'dinnerReady', 'updatedAt'])
+        && data.day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        && data.breakfast is string && data.breakfast.size() <= 240
+        && data.lunch is string && data.lunch.size() <= 240
+        && data.snacks is string && data.snacks.size() <= 240
+        && data.dinner is string && data.dinner.size() <= 240
+        && (!('breakfastTime' in data) || (data.breakfastTime is string && data.breakfastTime.size() <= 40))
+        && (!('breakfastReady' in data) || data.breakfastReady is bool)
+        && (!('lunchTime' in data) || (data.lunchTime is string && data.lunchTime.size() <= 40))
+        && (!('lunchReady' in data) || data.lunchReady is bool)
+        && (!('snacksTime' in data) || (data.snacksTime is string && data.snacksTime.size() <= 40))
+        && (!('snacksReady' in data) || data.snacksReady is bool)
+        && (!('dinnerTime' in data) || (data.dinnerTime is string && data.dinnerTime.size() <= 40))
+        && (!('dinnerReady' in data) || data.dinnerReady is bool)
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
+    }
+
+    function isValidHostelAttendanceLog(data) {
+      return data.keys().hasAll(['id', 'date', 'residentUid', 'status'])
+        && data.keys().hasOnly(['id', 'date', 'residentUid', 'residentName', 'roomNumber', 'status', 'markedByUid'])
+        && isValidId(data.id)
+        && isValidId(data.residentUid)
+        && data.date is string && data.date.size() <= 20
+        && data.status in ['In', 'Out', 'Leave']
+        && (!('residentName' in data) || (data.residentName is string && data.residentName.size() <= 100))
+        && (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 16))
+        && (!('markedByUid' in data) || isValidId(data.markedByUid));
+    }
+
+    function isValidCanteenItem(data) {
+      return data.keys().hasAll(['id', 'name', 'price', 'isAvailable'])
+        && data.keys().hasOnly(['id', 'name', 'category', 'price', 'availableFrom', 'availableTo', 'isAvailable', 'veg'])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.price is number && data.price >= 0 && data.price <= 10000
+        && data.isAvailable is bool
+        && (!('category' in data) || (data.category is string && data.category.size() <= 40))
+        && (!('availableFrom' in data) || (data.availableFrom is string && data.availableFrom.size() <= 16))
+        && (!('availableTo' in data) || (data.availableTo is string && data.availableTo.size() <= 16))
+        && (!('veg' in data) || data.veg is bool);
+    }
+
+    function isValidCanteenOrder(data) {
+      return data.keys().hasAll(['id', 'tokenNumber', 'userUid', 'items', 'totalAmount', 'status'])
+        && data.keys().hasOnly(['id', 'tokenNumber', 'userUid', 'userName', 'userRole', 'items', 'totalAmount', 'status', 'placedAt'])
+        && isValidId(data.id)
+        && isValidId(data.userUid)
+        && data.tokenNumber is number
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 20 && data.items[0] is map
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.status in ['Placed', 'Preparing', 'Ready', 'Collected']
+        && (!('userName' in data) || (data.userName is string && data.userName.size() <= 100))
+        && (!('userRole' in data) || (data.userRole is string && data.userRole.size() <= 30))
+        && (!('placedAt' in data) || (data.placedAt is string && data.placedAt.size() <= 40));
+    }
+
+    function isValidNotice(data) {
+      return data.keys().hasAll(['id', 'title', 'message', 'audience', 'date', 'authorUid'])
+        && data.keys().hasOnly(['id', 'title', 'message', 'audience', 'date', 'authorUid', 'authorName', 'authorRole', 'pinned'])
+        && isValidId(data.id)
+        && isValidId(data.authorUid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 2000
+        && data.audience in ['All', 'Students', 'Staff', 'Hostel']
+        && data.date is string && data.date.size() <= 20
+        && (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 100))
+        && (!('authorRole' in data) || (data.authorRole is string && data.authorRole.size() <= 40))
+        && (!('pinned' in data) || data.pinned is bool);
+    }
+
+    function isValidCampusEvent(data) {
+      return data.keys().hasAll(['id', 'title', 'date', 'time', 'venue', 'audience'])
+        && data.keys().hasOnly(['id', 'title', 'description', 'date', 'time', 'venue', 'audience', 'organizerName', 'createdByUid'])
+        && isValidId(data.id)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.date is string && data.date.size() <= 20
+        && data.time is string && data.time.size() <= 30
+        && data.venue is string && data.venue.size() <= 120
+        && data.audience in ['All', 'Students', 'Staff', 'Hostel']
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1000))
+        && (!('organizerName' in data) || (data.organizerName is string && data.organizerName.size() <= 100))
+        && (!('createdByUid' in data) || isValidId(data.createdByUid));
+    }
+
+    function isValidChatThread(data) {
+      return data.keys().hasAll(['id', 'type', 'title'])
+        && data.keys().hasOnly(['id', 'type', 'title', 'className', 'participantUids'])
+        && isValidId(data.id)
+        && data.type in ['class', 'hostel', 'dm']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 100
+        && (!('className' in data) || (data.className is string && data.className.size() <= 40))
+        && (!('participantUids' in data) || (data.participantUids is list && data.participantUids.size() <= 10 && (data.participantUids.size() == 0 || data.participantUids[0] is string)));
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['id', 'threadId', 'senderUid', 'senderName', 'text', 'createdAt'])
+        && data.keys().hasOnly(['id', 'threadId', 'senderUid', 'senderName', 'senderRole', 'text', 'createdAt'])
+        && isValidId(data.id)
+        && isValidId(data.threadId)
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 100
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 1500
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && (!('senderRole' in data) || (data.senderRole is string && data.senderRole.size() <= 40));
+    }
+
+    function isValidCampusDocument(data) {
+      return data.keys().hasAll(['id', 'title', 'category', 'audience', 'uploadedByUid'])
+        && data.keys().hasOnly(['id', 'title', 'category', 'audience', 'department', 'uploadedByUid', 'uploadedByName', 'uploadedAt', 'fileName', 'summary', 'pdfDataUrl', 'sections'])
+        && isValidId(data.id)
+        && isValidId(data.uploadedByUid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.category in ['Notes', 'Circular']
+        && data.audience in ['All', 'Students', 'Staff', 'Hostel']
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('uploadedByName' in data) || (data.uploadedByName is string && data.uploadedByName.size() <= 100))
+        && (!('uploadedAt' in data) || (data.uploadedAt is string && data.uploadedAt.size() <= 40))
+        && (!('fileName' in data) || (data.fileName is string && data.fileName.size() <= 120))
+        && (!('summary' in data) || (data.summary is string && data.summary.size() <= 600))
+        && (!('pdfDataUrl' in data) || (data.pdfDataUrl is string && data.pdfDataUrl.size() <= 750000))
+        && (!('sections' in data) || (data.sections is list && data.sections.size() <= 20));
+    }
+
+    function isValidMailMessage(data) {
+      return data.keys().hasAll(['id', 'fromUid', 'toUid', 'subject', 'body', 'sentAt'])
+        && data.keys().hasOnly(['id', 'fromUid', 'fromName', 'fromEmail', 'toUid', 'toName', 'toEmail', 'subject', 'body', 'sentAt', 'read'])
+        && isValidId(data.id)
+        && isValidId(data.fromUid)
+        && isValidId(data.toUid)
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 180
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 3000
+        && data.sentAt is string && data.sentAt.size() <= 40
+        && (!('fromName' in data) || (data.fromName is string && data.fromName.size() <= 100))
+        && (!('fromEmail' in data) || (data.fromEmail is string && data.fromEmail.size() <= 120))
+        && (!('toName' in data) || (data.toName is string && data.toName.size() <= 100))
+        && (!('toEmail' in data) || (data.toEmail is string && data.toEmail.size() <= 120))
+        && (!('read' in data) || data.read is bool);
+    }
+
+    function isValidCampusMeeting(data) {
+      return data.keys().hasAll(['id', 'title', 'hostUid', 'date', 'time', 'joinUrl', 'audience'])
+        && data.keys().hasOnly(['id', 'title', 'hostUid', 'hostName', 'department', 'audience', 'date', 'time', 'joinUrl', 'agenda'])
+        && isValidId(data.id)
+        && isValidId(data.hostUid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.date is string && data.date.size() <= 20
+        && data.time is string && data.time.size() <= 30
+        && data.joinUrl is string && data.joinUrl.size() <= 300
+        && data.audience in ['All', 'Students', 'Staff', 'Hostel']
+        && (!('hostName' in data) || (data.hostName is string && data.hostName.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('agenda' in data) || (data.agenda is string && data.agenda.size() <= 600));
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Public Campus Directory Profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.uid is string;
+      allow create: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming()) && (
+        isManagement() ||
+        (isOwner(userId) && incoming().uid == request.auth.uid && incoming().role == 'student' && incoming().isHostel == false && incoming().isWarden == false)
+      );
+      allow update: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming()) && (
+        isManagement() ||
+        (isWarden() && existing().isHostel == true && incoming().diff(existing()).affectedKeys().hasOnly(['roomNumber', 'block', 'hostelStatus']) && incoming().role == existing().role && incoming().isHostel == existing().isHostel && incoming().isWarden == existing().isWarden) ||
+        (isOwner(userId) && existing().isHostel == true && incoming().diff(existing()).affectedKeys().hasOnly(['hostelStatus']) && incoming().uid == existing().uid && incoming().role == existing().role && incoming().isHostel == existing().isHostel && incoming().isWarden == existing().isWarden)
+      );
+      allow delete: if isValidId(userId) && isManagement();
+    }
+
+    // 2. Private PII & Hostel Medical Details (Strictly Owner / Warden / Management)
+    match /userPrivate/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isWarden() || isManagement());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isWarden() || isManagement());
+      allow create: if isValidId(userId) && isSignedIn() && isValidUserPrivate(incoming()) && (
+        isManagement() ||
+        isWarden() ||
+        (isOwner(userId) && incoming().uid == request.auth.uid)
+      );
+      allow update: if isValidId(userId) && isSignedIn() && isValidUserPrivate(incoming()) && (
+        isManagement() ||
+        (isWarden() && incoming().uid == existing().uid) ||
+        (isOwner(userId) && incoming().uid == existing().uid && incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'guardianName', 'guardianPhone', 'address', 'updatedAt']))
+      );
+      allow delete: if isValidId(userId) && isManagement();
+    }
+
+    // 3. Rotating QR Attendance Sessions
+    match /attendanceSessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.staffUid is string;
+      allow create: if isValidId(sessionId) && isStaff() && isValidAttendanceSession(incoming()) && (
+        isManagement() || incoming().staffUid == request.auth.uid
+      );
+      allow update: if isValidId(sessionId) && isStaff() && isValidAttendanceSession(incoming()) && (
+        isManagement() || (existing().staffUid == request.auth.uid && incoming().staffUid == existing().staffUid && incoming().diff(existing()).affectedKeys().hasOnly(['currentToken', 'tokenIssuedAt', 'expiresAt', 'active']))
+      );
+      allow delete: if isValidId(sessionId) && isManagement();
+    }
+
+    // 4. Student Attendance Records
+    match /attendanceRecords/{recordId} {
+      allow get: if isValidId(recordId) && (isStaff() || isManagement() || (isSignedIn() && existing().studentUid == request.auth.uid));
+      allow list: if isSignedIn() && (resource.data.studentUid == request.auth.uid || isStaff() || isManagement());
+      allow create: if isValidId(recordId) && isSignedIn() && isValidAttendanceRecord(incoming()) && (
+        isManagement() ||
+        isStaff() ||
+        (incoming().studentUid == request.auth.uid && incoming().status == 'Present' && incoming().markedVia in ['QR', 'Manual'])
+      );
+      allow update: if isValidId(recordId) && (isStaff() || isManagement()) && isValidAttendanceRecord(incoming()) && incoming().studentUid == existing().studentUid;
+      allow delete: if isValidId(recordId) && isManagement();
+    }
+
+    // 5. Staff Campus Check-ins
+    match /staffCheckins/{checkinId} {
+      allow get: if isValidId(checkinId) && (isManagement() || (isStaff() && existing().staffUid == request.auth.uid));
+      allow list: if isSignedIn() && (resource.data.staffUid == request.auth.uid || isManagement());
+      allow create: if isValidId(checkinId) && isStaff() && isValidStaffCheckin(incoming()) && (
+        isManagement() || incoming().staffUid == request.auth.uid
+      );
+      allow update: if isValidId(checkinId) && isManagement() && isValidStaffCheckin(incoming());
+      allow delete: if isValidId(checkinId) && isManagement();
+    }
+
+    // 6. Hostel Rooms
+    match /hostelRooms/{roomId} {
+      allow get: if isValidId(roomId) && isHostelResident();
+      allow list: if isHostelResident() && resource.data.roomNumber is string;
+      allow create: if isValidId(roomId) && (isWarden() || isManagement()) && isValidHostelRoom(incoming());
+      allow update: if isValidId(roomId) && (isWarden() || isManagement()) && isValidHostelRoom(incoming());
+      allow delete: if isValidId(roomId) && isManagement();
+    }
+
+    // 7. Hostel Menus
+    match /hostelMenus/{dayId} {
+      allow get: if isValidId(dayId) && isHostelResident();
+      allow list: if isHostelResident() && resource.data.day is string;
+      allow create: if isValidId(dayId) && (isWarden() || isManagement()) && isValidHostelMenu(incoming());
+      allow update: if isValidId(dayId) && (isWarden() || isManagement()) && isValidHostelMenu(incoming());
+      allow delete: if isValidId(dayId) && isManagement();
+    }
+
+    // 8. Hostel Attendance Logs
+    match /hostelAttendanceLogs/{logId} {
+      allow get: if isValidId(logId) && (isWarden() || isManagement() || (isSignedIn() && existing().residentUid == request.auth.uid));
+      allow list: if isSignedIn() && (resource.data.residentUid == request.auth.uid || isWarden() || isManagement());
+      allow create: if isValidId(logId) && (isWarden() || isManagement()) && isValidHostelAttendanceLog(incoming());
+      allow update: if isValidId(logId) && (isWarden() || isManagement()) && isValidHostelAttendanceLog(incoming()) && incoming().residentUid == existing().residentUid;
+      allow delete: if isValidId(logId) && isManagement();
+    }
+
+    // 9. Canteen Items
+    match /canteenItems/{itemId} {
+      allow get: if isValidId(itemId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.name is string;
+      allow create: if isValidId(itemId) && (isStaff() || isManagement()) && isValidCanteenItem(incoming());
+      allow update: if isValidId(itemId) && (isStaff() || isManagement()) && isValidCanteenItem(incoming());
+      allow delete: if isValidId(itemId) && isManagement();
+    }
+
+    // 10. Canteen Orders
+    match /canteenOrders/{orderId} {
+      allow get: if isValidId(orderId) && (isStaff() || isManagement() || (isSignedIn() && existing().userUid == request.auth.uid));
+      allow list: if isSignedIn() && (resource.data.userUid == request.auth.uid || isStaff() || isManagement());
+      allow create: if isValidId(orderId) && isSignedIn() && isValidCanteenOrder(incoming()) && (
+        isManagement() || (incoming().userUid == request.auth.uid && incoming().status == 'Placed')
+      );
+      allow update: if isValidId(orderId) && (isStaff() || isManagement()) && isValidCanteenOrder(incoming()) && (
+        isManagement() || (existing().status != 'Collected' && incoming().userUid == existing().userUid && incoming().diff(existing()).affectedKeys().hasOnly(['status']))
+      );
+      allow delete: if isValidId(orderId) && isManagement();
+    }
+
+    // 11. Notices
+    match /notices/{noticeId} {
+      allow get: if isValidId(noticeId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.audience in ['All', 'Students', 'Staff', 'Hostel'];
+      allow create: if isValidId(noticeId) && (isStaff() || isManagement()) && isValidNotice(incoming()) && (
+        isManagement() || incoming().authorUid == request.auth.uid
+      );
+      allow update: if isValidId(noticeId) && (isStaff() || isManagement()) && isValidNotice(incoming()) && (
+        isManagement() || (existing().authorUid == request.auth.uid && incoming().authorUid == existing().authorUid)
+      );
+      allow delete: if isValidId(noticeId) && (isManagement() || (isStaff() && existing().authorUid == request.auth.uid));
+    }
+
+    // 12. Events
+    match /events/{eventId} {
+      allow get: if isValidId(eventId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.audience in ['All', 'Students', 'Staff', 'Hostel'];
+      allow create: if isValidId(eventId) && (isStaff() || isManagement()) && isValidCampusEvent(incoming());
+      allow update: if isValidId(eventId) && (isStaff() || isManagement()) && isValidCampusEvent(incoming());
+      allow delete: if isValidId(eventId) && isManagement();
+    }
+
+    // 13. Chat Threads & Messages (Master Gate Pattern)
+    match /chatThreads/{threadId} {
+      allow get: if isValidId(threadId) && isSignedIn() && (
+        existing().type != 'hostel' || isHostelResident()
+      ) && (
+        existing().type != 'dm' || request.auth.uid in existing().participantUids || isManagement()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.type == 'class' ||
+        (resource.data.type == 'hostel' && isHostelResident()) ||
+        (resource.data.type == 'dm' && (request.auth.uid in resource.data.participantUids || isManagement()))
+      );
+      allow create: if isValidId(threadId) && isSignedIn() && isValidChatThread(incoming()) && (
+        isManagement() || isStaff() || (incoming().type == 'dm' && request.auth.uid in incoming().participantUids)
+      );
+      allow update: if isValidId(threadId) && isManagement() && isValidChatThread(incoming());
+      allow delete: if isValidId(threadId) && isManagement();
+
+      match /messages/{messageId} {
+        allow get: if isValidId(threadId) && isValidId(messageId) && isSignedIn() && exists(/databases/$(database)/documents/chatThreads/$(threadId));
+        allow list: if isSignedIn() && exists(/databases/$(database)/documents/chatThreads/$(threadId)) && (
+          get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'class' ||
+          (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'hostel' && isHostelResident()) ||
+          (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'dm' && (request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids || isManagement()))
+        );
+        allow create: if isValidId(threadId) && isValidId(messageId) && isSignedIn() && isValidChatMessage(incoming())
+          && exists(/databases/$(database)/documents/chatThreads/$(threadId))
+          && incoming().threadId == threadId
+          && (isManagement() || incoming().senderUid == request.auth.uid)
+          && (
+            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type != 'hostel' || isHostelResident()
+          )
+          && (
+            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type != 'dm' || request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids || isManagement()
+          );
+        allow update, delete: if isValidId(threadId) && isValidId(messageId) && isManagement();
+      }
+    }
+
+    // 14. Documents (PDF Viewer)
+    match /documents/{docId} {
+      allow get: if isValidId(docId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.audience in ['All', 'Students', 'Staff', 'Hostel'];
+      allow create: if isValidId(docId) && (isStaff() || isManagement()) && isValidCampusDocument(incoming()) && (
+        isManagement() || incoming().uploadedByUid == request.auth.uid
+      );
+      allow update: if isValidId(docId) && (isStaff() || isManagement()) && isValidCampusDocument(incoming());
+      allow delete: if isValidId(docId) && isManagement();
+    }
+
+    // 15. Internal Mail
+    match /mails/{mailId} {
+      allow get: if isValidId(mailId) && isSignedIn() && (
+        existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid || isManagement()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid || isManagement()
+      );
+      allow create: if isValidId(mailId) && isSignedIn() && isValidMailMessage(incoming()) && (
+        isManagement() || incoming().fromUid == request.auth.uid
+      );
+      allow update: if isValidId(mailId) && isSignedIn() && isValidMailMessage(incoming()) && (
+        isManagement() || (existing().toUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['read']) && incoming().fromUid == existing().fromUid && incoming().toUid == existing().toUid)
+      );
+      allow delete: if isValidId(mailId) && isManagement();
+    }
+
+    // 16. Scheduled Meetings
+    match /meetings/{meetingId} {
+      allow get: if isValidId(meetingId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.audience in ['All', 'Students', 'Staff', 'Hostel'];
+      allow create: if isValidId(meetingId) && (isStaff() || isManagement()) && isValidCampusMeeting(incoming()) && (
+        isManagement() || incoming().hostUid == request.auth.uid
+      );
+      allow update: if isValidId(meetingId) && (isStaff() || isManagement()) && isValidCampusMeeting(incoming());
+      allow delete: if isValidId(meetingId) && isManagement();
+    }
+
+    // Connection test document (read-only ping)
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+  }
+}

@@ -1,0 +1,915 @@
+import {
+  AttendanceRecord,
+  AttendanceSession,
+  CampusDocument,
+  CampusEvent,
+  CampusMeeting,
+  CanteenItem,
+  CanteenOrder,
+  ChatMessage,
+  ChatThread,
+  DayOfWeek,
+  HostelAttendanceLog,
+  HostelMenu,
+  HostelRoom,
+  MailMessage,
+  Notice,
+  StaffCheckin,
+  UserPrivateInfo,
+  UserProfile,
+} from '../types';
+import { DEFAULT_CAMPUS_GEOFENCE } from '../utils/geo';
+import { buildPdfDataUrl } from '../utils/pdfGenerator';
+
+export function formatIsoDate(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function addDays(base: Date, days: number): Date {
+  const copy = new Date(base);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+const today = new Date();
+const todayStr = formatIsoDate(today);
+const tomorrowStr = formatIsoDate(addDays(today, 1));
+const yesterdayStr = formatIsoDate(addDays(today, -1));
+const plus5DaysStr = formatIsoDate(addDays(today, 5));
+
+export const SEED_USERS: UserProfile[] = [
+  {
+    uid: 'mgmt-1',
+    name: 'Dr. Sundaravel K',
+    role: 'management',
+    isHostel: false,
+    isWarden: false,
+    department: 'Administration',
+    createdAt: '2026-07-01T08:00:00Z',
+  },
+  {
+    uid: 'staff-1',
+    name: 'Prof. Meenakshi S',
+    role: 'staff',
+    isHostel: false,
+    isWarden: false,
+    department: 'Computer Science & Engineering',
+    createdAt: '2026-07-02T08:00:00Z',
+  },
+  {
+    uid: 'staff-warden',
+    name: 'Dr. Karthikeyan R',
+    role: 'staff',
+    isHostel: false,
+    isWarden: true,
+    department: 'Mechanical Engineering',
+    createdAt: '2026-07-02T08:00:00Z',
+  },
+  // 5 Hostel Residents across 3 rooms
+  {
+    uid: 'stu-1',
+    name: 'Aravindhan M',
+    role: 'student',
+    isHostel: true,
+    isWarden: false,
+    department: 'Computer Science & Engineering',
+    className: 'III CSE A',
+    registerNumber: '921324104001',
+    roomNumber: 'K-201',
+    block: 'Kurinji Hostel',
+    hostelStatus: 'In',
+    createdAt: '2026-07-10T08:00:00Z',
+  },
+  {
+    uid: 'stu-2',
+    name: 'Praveen Kumar V',
+    role: 'student',
+    isHostel: true,
+    isWarden: false,
+    department: 'Computer Science & Engineering',
+    className: 'III CSE A',
+    registerNumber: '921324104014',
+    roomNumber: 'K-201',
+    block: 'Kurinji Hostel',
+    hostelStatus: 'In',
+    createdAt: '2026-07-10T08:00:00Z',
+  },
+  {
+    uid: 'stu-3',
+    name: 'Harish Balaji T',
+    role: 'student',
+    isHostel: true,
+    isWarden: false,
+    department: 'Electronics & Communication',
+    className: 'III ECE B',
+    registerNumber: '921324106022',
+    roomNumber: 'K-202',
+    block: 'Kurinji Hostel',
+    hostelStatus: 'Out',
+    createdAt: '2026-07-10T08:00:00Z',
+  },
+  {
+    uid: 'stu-4',
+    name: 'Sathishwaran P',
+    role: 'student',
+    isHostel: true,
+    isWarden: false,
+    department: 'Information Technology',
+    className: 'III IT A',
+    registerNumber: '921324205009',
+    roomNumber: 'K-202',
+    block: 'Kurinji Hostel',
+    hostelStatus: 'In',
+    createdAt: '2026-07-10T08:00:00Z',
+  },
+  {
+    uid: 'stu-5',
+    name: 'Deepika Lakshmi N',
+    role: 'student',
+    isHostel: true,
+    isWarden: false,
+    department: 'Computer Science & Engineering',
+    className: 'III CSE A',
+    registerNumber: '921324104038',
+    roomNumber: 'M-104',
+    block: 'Mullai Hostel',
+    hostelStatus: 'Leave',
+    createdAt: '2026-07-10T08:00:00Z',
+  },
+  // 3 Day Scholar Students
+  {
+    uid: 'stu-6',
+    name: 'Kavya Dharshini S',
+    role: 'student',
+    isHostel: false,
+    isWarden: false,
+    department: 'Computer Science & Engineering',
+    className: 'III CSE A',
+    registerNumber: '921324104025',
+    createdAt: '2026-07-11T08:00:00Z',
+  },
+  {
+    uid: 'stu-7',
+    name: 'Vigneshwaran G',
+    role: 'student',
+    isHostel: false,
+    isWarden: false,
+    department: 'Computer Science & Engineering',
+    className: 'III CSE A',
+    registerNumber: '921324104044',
+    createdAt: '2026-07-11T08:00:00Z',
+  },
+  {
+    uid: 'stu-8',
+    name: 'Nivetha Sri R',
+    role: 'student',
+    isHostel: false,
+    isWarden: false,
+    department: 'Electronics & Communication',
+    className: 'III ECE B',
+    registerNumber: '921324106051',
+    createdAt: '2026-07-11T08:00:00Z',
+  },
+];
+
+export const SEED_USER_PRIVATE: Record<string, UserPrivateInfo> = {
+  'mgmt-1': {
+    uid: 'mgmt-1',
+    email: 'principal.demo@psnacet.edu.in',
+    phone: '+91 98000 00001',
+    address: 'Principal Quarters, PSNA Campus, Dindigul',
+    updatedAt: '2026-08-01T09:00:00Z',
+  },
+  'staff-1': {
+    uid: 'staff-1',
+    email: 'meenakshi.cse@psnacet.edu.in',
+    phone: '+91 98000 00011',
+    address: '14 Bharathi Nagar, Dindigul 624001',
+    updatedAt: '2026-08-01T09:00:00Z',
+  },
+  'staff-warden': {
+    uid: 'staff-warden',
+    email: 'warden.hostel@psnacet.edu.in',
+    phone: '+91 98000 00012',
+    address: 'Warden Residence, Kurinji Block, PSNA Campus',
+    updatedAt: '2026-08-01T09:00:00Z',
+  },
+  'stu-1': {
+    uid: 'stu-1',
+    email: 'aravindhan.cse@psnacet.edu.in',
+    phone: '+91 98000 00101',
+    guardianName: 'Muruganandam P',
+    guardianPhone: '+91 98000 10101',
+    address: '22 Anna Street, Palani Road, Oddanchatram 624619',
+    bloodGroup: 'O+',
+    medicalNotes: 'No chronic conditions; wears corrective spectacles.',
+    allergies: 'None reported',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-2': {
+    uid: 'stu-2',
+    email: 'praveen.cse@psnacet.edu.in',
+    phone: '+91 98000 00102',
+    guardianName: 'Velmurugan K',
+    guardianPhone: '+91 98000 10102',
+    address: '88 Gandhi Nagar, Madurai 625020',
+    bloodGroup: 'B+',
+    medicalNotes: 'Mild seasonal rhinitis during winter.',
+    allergies: 'Dust sensitivity',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-3': {
+    uid: 'stu-3',
+    email: 'harish.ece@psnacet.edu.in',
+    phone: '+91 98000 00103',
+    guardianName: 'Thirumalai S',
+    guardianPhone: '+91 98000 10103',
+    address: '5 West Car Street, Tirunelveli 627006',
+    bloodGroup: 'A+',
+    medicalNotes: 'Carries backup salbutamol inhaler for exercise-induced wheezing.',
+    allergies: 'Peanuts (mild)',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-4': {
+    uid: 'stu-4',
+    email: 'sathish.it@psnacet.edu.in',
+    phone: '+91 98000 00104',
+    guardianName: 'Palanisamy D',
+    guardianPhone: '+91 98000 10104',
+    address: '19 Kovil Street, Karur 639001',
+    bloodGroup: 'AB+',
+    medicalNotes: 'Fit for sports and NCC activities.',
+    allergies: 'None reported',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-5': {
+    uid: 'stu-5',
+    email: 'deepika.cse@psnacet.edu.in',
+    phone: '+91 98000 00105',
+    guardianName: 'Natarajan V',
+    guardianPhone: '+91 98000 10105',
+    address: '41 Temple View Colony, Trichy 620002',
+    bloodGroup: 'O-',
+    medicalNotes: 'Mild iron deficiency supplement prescribed by campus clinic.',
+    allergies: 'Sulfa drugs',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-6': {
+    uid: 'stu-6',
+    email: 'kavya.cse@psnacet.edu.in',
+    phone: '+91 98000 00106',
+    address: '7 Spencer Compound, Dindigul 624001',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-7': {
+    uid: 'stu-7',
+    email: 'vignesh.cse@psnacet.edu.in',
+    phone: '+91 98000 00107',
+    address: '33 Begambur Main Road, Dindigul 624002',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+  'stu-8': {
+    uid: 'stu-8',
+    email: 'nivetha.ece@psnacet.edu.in',
+    phone: '+91 98000 00108',
+    address: '12 Seelapadi Colony, Dindigul 624005',
+    updatedAt: '2026-08-15T10:00:00Z',
+  },
+};
+
+export const DEMO_ACCOUNTS = [
+  {
+    uid: 'stu-6',
+    label: 'Student',
+    subtitle: 'Kavya Dharshini S · III CSE A',
+    email: 'kavya.cse@psnacet.edu.in',
+  },
+  {
+    uid: 'stu-1',
+    label: 'Hostel Resident',
+    subtitle: 'Aravindhan M · Room K-201',
+    email: 'aravindhan.cse@psnacet.edu.in',
+  },
+  {
+    uid: 'staff-1',
+    label: 'Staff',
+    subtitle: 'Prof. Meenakshi S · CSE Dept',
+    email: 'meenakshi.cse@psnacet.edu.in',
+  },
+  {
+    uid: 'staff-warden',
+    label: 'Warden',
+    subtitle: 'Dr. Karthikeyan R · Hostel Warden',
+    email: 'warden.hostel@psnacet.edu.in',
+  },
+  {
+    uid: 'mgmt-1',
+    label: 'Management',
+    subtitle: 'Dr. Sundaravel K · Principal',
+    email: 'principal.demo@psnacet.edu.in',
+  },
+];
+
+export const SUBJECTS = [
+  { code: 'CS3401', name: 'Algorithms & Data Structures' },
+  { code: 'CS3402', name: 'Operating Systems' },
+  { code: 'CS3403', name: 'Database Management Systems' },
+  { code: 'MA3354', name: 'Discrete Mathematics' },
+  { code: 'CS3404', name: 'Computer Networks' },
+];
+
+// Generate 4 weeks (20 weekdays) of sample attendance for all 8 students
+export function buildSeedAttendance(): AttendanceRecord[] {
+  const records: AttendanceRecord[] = [];
+  const students = SEED_USERS.filter((u) => u.role === 'student');
+
+  const weekdayDates: string[] = [];
+  let cursor = addDays(today, -1);
+  while (weekdayDates.length < 20) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      weekdayDates.unshift(formatIsoDate(cursor));
+    }
+    cursor = addDays(cursor, -1);
+  }
+
+  weekdayDates.forEach((dateStr, dIdx) => {
+    SUBJECTS.forEach((subj, sIdx) => {
+      students.forEach((stu, stuIdx) => {
+        // Deterministic realistic pattern (~80%-95% attendance)
+        const hash = (dIdx * 7 + sIdx * 13 + stuIdx * 5) % 11;
+        const isPresent = hash !== 0 && !(stuIdx === 2 && hash === 4);
+        records.push({
+          id: `att-${dateStr}-${subj.code}-${stu.uid}`,
+          studentUid: stu.uid,
+          studentName: stu.name,
+          registerNumber: stu.registerNumber || '',
+          className: stu.className || 'III CSE A',
+          subjectCode: subj.code,
+          subjectName: subj.name,
+          date: dateStr,
+          status: isPresent ? 'Present' : 'Absent',
+          markedVia: 'Seed',
+          markedAt: `${dateStr}T09:15:00Z`,
+        });
+      });
+    });
+  });
+
+  // Also add today's initial morning record for 2 students so management dashboard shows live today %
+  const morningSubj = SUBJECTS[0];
+  students.slice(0, 6).forEach((stu, idx) => {
+    records.push({
+      id: `att-${todayStr}-${morningSubj.code}-${stu.uid}`,
+      studentUid: stu.uid,
+      studentName: stu.name,
+      registerNumber: stu.registerNumber || '',
+      className: stu.className || 'III CSE A',
+      subjectCode: morningSubj.code,
+      subjectName: morningSubj.name,
+      date: todayStr,
+      status: idx === 4 ? 'Absent' : 'Present',
+      markedVia: 'Seed',
+      markedAt: `${todayStr}T09:05:00Z`,
+    });
+  });
+
+  return records;
+}
+
+export const SEED_ATTENDANCE_RECORDS: AttendanceRecord[] = buildSeedAttendance();
+
+export const SEED_ATTENDANCE_SESSIONS: AttendanceSession[] = [
+  {
+    id: 'sess-cs3401-today',
+    staffUid: 'staff-1',
+    staffName: 'Prof. Meenakshi S',
+    subjectCode: 'CS3401',
+    subjectName: 'Algorithms & Data Structures',
+    className: 'III CSE A',
+    department: 'Computer Science & Engineering',
+    currentToken: 'PSNA-482910',
+    tokenIssuedAt: Date.now(),
+    expiresAt: Date.now() + 30000,
+    campusLat: DEFAULT_CAMPUS_GEOFENCE.lat,
+    campusLng: DEFAULT_CAMPUS_GEOFENCE.lng,
+    radiusMeters: 250,
+    active: false,
+  },
+];
+
+export const SEED_STAFF_CHECKINS: StaffCheckin[] = [
+  {
+    id: `chk-${todayStr}-staff-warden`,
+    staffUid: 'staff-warden',
+    staffName: 'Dr. Karthikeyan R',
+    department: 'Mechanical Engineering',
+    date: todayStr,
+    status: 'Present',
+    checkinTime: '08:32 AM',
+    distanceMeters: 42,
+  },
+  {
+    id: `chk-${yesterdayStr}-staff-1`,
+    staffUid: 'staff-1',
+    staffName: 'Prof. Meenakshi S',
+    department: 'Computer Science & Engineering',
+    date: yesterdayStr,
+    status: 'Present',
+    checkinTime: '08:45 AM',
+    distanceMeters: 85,
+  },
+];
+
+export const SEED_HOSTEL_ROOMS: HostelRoom[] = [
+  {
+    id: 'room-k201',
+    roomNumber: 'K-201',
+    block: 'Kurinji Hostel',
+    floor: '2nd Floor',
+    capacity: 2,
+    occupantUids: ['stu-1', 'stu-2'],
+  },
+  {
+    id: 'room-k202',
+    roomNumber: 'K-202',
+    block: 'Kurinji Hostel',
+    floor: '2nd Floor',
+    capacity: 2,
+    occupantUids: ['stu-3', 'stu-4'],
+  },
+  {
+    id: 'room-m104',
+    roomNumber: 'M-104',
+    block: 'Mullai Hostel',
+    floor: '1st Floor',
+    capacity: 2,
+    occupantUids: ['stu-5'],
+  },
+  {
+    id: 'room-k203',
+    roomNumber: 'K-203',
+    block: 'Kurinji Hostel',
+    floor: '2nd Floor',
+    capacity: 2,
+    occupantUids: [],
+  },
+  {
+    id: 'room-m105',
+    roomNumber: 'M-105',
+    block: 'Mullai Hostel',
+    floor: '1st Floor',
+    capacity: 2,
+    occupantUids: [],
+  },
+];
+
+const DAYS: DayOfWeek[] = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+];
+
+export const SEED_HOSTEL_MENUS: HostelMenu[] = DAYS.map((day, idx) => {
+  const menus: Record<DayOfWeek, { b: string; l: string; s: string; d: string }> = {
+    Monday: {
+      b: 'Idli, Sambar, Coconut Chutney & Filter Coffee',
+      l: 'Steamed Rice, Drumstick Sambar, Rasam, Cabbage Poriyal & Curd',
+      s: 'Onion Pakoda & Masala Tea',
+      d: 'Chapathi, Veg Kurma & Banana',
+    },
+    Tuesday: {
+      b: 'Ven Pongal, Medu Vada, Chutney & Milk',
+      l: 'Variety Rice (Lemon & Tomato), Potato Fry, Appalam & Buttermilk',
+      s: 'Sundal & Ginger Tea',
+      d: 'Dosa, Tomato Chutney & Vegetable Sambar',
+    },
+    Wednesday: {
+      b: 'Poori, Potato Masala & Coffee',
+      l: 'Steamed Rice, Kara Kuzhambu, Kootu, Curd & Payasam',
+      s: 'Veg Puff & Tea',
+      d: 'Parotta, Salna & Boiled Egg / Paneer Gravy',
+    },
+    Thursday: {
+      b: 'Rava Upma, Coconut Chutney & Medu Vada',
+      l: 'Steamed Rice, Spinach Dal, Beans Poriyal, Rasam & Curd',
+      s: 'Banana Bajji & Coffee',
+      d: 'Idiyappam, Coconut Milk & Veg Stew',
+    },
+    Friday: {
+      b: 'Masala Dosa, Sambar, Mint Chutney & Coffee',
+      l: 'Veg Biryani, Onion Raita, Brinjal Curry & Boiled Egg / Gobi 65',
+      s: 'Samosa & Masala Tea',
+      d: 'Chapathi, Channa Masala & Sweet Kesari',
+    },
+    Saturday: {
+      b: 'Kichadi, Groundnut Chutney & Filter Coffee',
+      l: 'Curd Rice, Tamarind Rice, Aviyal & Chips',
+      s: 'Biscuits & Badam Milk',
+      d: 'Uthappam, Tomato Chutney & Sambar',
+    },
+    Sunday: {
+      b: 'Chole Bhature / Ghee Roast & Fresh Juice',
+      l: 'Special Meals: Rice, Dal Fry, Paneer Butter Masala, Ice Cream',
+      s: 'Bread Omelette / Veg Sandwich & Coffee',
+      d: 'Light Rice, Rasam, Aloo Fry & Milk',
+    },
+  };
+  const m = menus[day];
+  return {
+    day,
+    breakfast: m.b,
+    breakfastTime: '07:15 AM – 08:45 AM',
+    breakfastReady: idx === (today.getDay() + 6) % 7,
+    lunch: m.l,
+    lunchTime: '12:15 PM – 01:45 PM',
+    lunchReady: false,
+    snacks: m.s,
+    snacksTime: '04:30 PM – 05:30 PM',
+    snacksReady: false,
+    dinner: m.d,
+    dinnerTime: '07:30 PM – 09:00 PM',
+    dinnerReady: false,
+  };
+});
+
+export const SEED_HOSTEL_ATTENDANCE_LOGS: HostelAttendanceLog[] = [
+  { id: `hlog-${todayStr}-stu-1`, date: todayStr, residentUid: 'stu-1', residentName: 'Aravindhan M', roomNumber: 'K-201', status: 'In', markedByUid: 'staff-warden' },
+  { id: `hlog-${todayStr}-stu-2`, date: todayStr, residentUid: 'stu-2', residentName: 'Praveen Kumar V', roomNumber: 'K-201', status: 'In', markedByUid: 'staff-warden' },
+  { id: `hlog-${todayStr}-stu-3`, date: todayStr, residentUid: 'stu-3', residentName: 'Harish Balaji T', roomNumber: 'K-202', status: 'Out', markedByUid: 'staff-warden' },
+  { id: `hlog-${todayStr}-stu-4`, date: todayStr, residentUid: 'stu-4', residentName: 'Sathishwaran P', roomNumber: 'K-202', status: 'In', markedByUid: 'staff-warden' },
+  { id: `hlog-${todayStr}-stu-5`, date: todayStr, residentUid: 'stu-5', residentName: 'Deepika Lakshmi N', roomNumber: 'M-104', status: 'Leave', markedByUid: 'staff-warden' },
+];
+
+export const SEED_CANTEEN_ITEMS: CanteenItem[] = [
+  { id: 'c1', name: 'Ghee Masala Dosa', category: 'Breakfast', price: 45, availableFrom: '07:30', availableTo: '11:00', isAvailable: true, veg: true },
+  { id: 'c2', name: 'Idli Vada Combo (3 pcs)', category: 'Breakfast', price: 35, availableFrom: '07:30', availableTo: '11:00', isAvailable: true, veg: true },
+  { id: 'c3', name: 'South Indian Mini Meals', category: 'Lunch', price: 70, availableFrom: '12:00', availableTo: '15:00', isAvailable: true, veg: true },
+  { id: 'c4', name: 'Veg Fried Rice + Gobi', category: 'Lunch', price: 85, availableFrom: '12:00', availableTo: '15:30', isAvailable: true, veg: true },
+  { id: 'c5', name: 'Chicken Biryani (Half)', category: 'Lunch', price: 110, availableFrom: '12:15', availableTo: '15:00', isAvailable: true, veg: false },
+  { id: 'c6', name: 'Paneer Roll', category: 'Snacks', price: 55, availableFrom: '10:00', availableTo: '18:00', isAvailable: true, veg: true },
+  { id: 'c7', name: 'Crispy Samosa (2 pcs)', category: 'Snacks', price: 25, availableFrom: '09:30', availableTo: '18:30', isAvailable: true, veg: true },
+  { id: 'c8', name: 'Filter Coffee', category: 'Beverages', price: 20, availableFrom: '07:30', availableTo: '19:00', isAvailable: true, veg: true },
+  { id: 'c9', name: 'Fresh Lime Mint Cooler', category: 'Beverages', price: 30, availableFrom: '10:00', availableTo: '18:00', isAvailable: true, veg: true },
+  { id: 'c10', name: 'Chilled Rose Milk', category: 'Beverages', price: 35, availableFrom: '11:00', availableTo: '18:00', isAvailable: false, veg: true },
+];
+
+export const SEED_CANTEEN_ORDERS: CanteenOrder[] = [
+  {
+    id: 'ord-101',
+    tokenNumber: 101,
+    userUid: 'stu-6',
+    userName: 'Kavya Dharshini S',
+    userRole: 'Student',
+    items: [
+      { itemId: 'c1', name: 'Ghee Masala Dosa', qty: 1, price: 45 },
+      { itemId: 'c8', name: 'Filter Coffee', qty: 1, price: 20 },
+    ],
+    totalAmount: 65,
+    status: 'Ready',
+    placedAt: `${todayStr}T09:10:00Z`,
+  },
+  {
+    id: 'ord-102',
+    tokenNumber: 102,
+    userUid: 'staff-1',
+    userName: 'Prof. Meenakshi S',
+    userRole: 'Staff',
+    items: [{ itemId: 'c8', name: 'Filter Coffee', qty: 2, price: 20 }],
+    totalAmount: 40,
+    status: 'Preparing',
+    placedAt: `${todayStr}T09:22:00Z`,
+  },
+];
+
+export const SEED_NOTICES: Notice[] = [
+  {
+    id: 'not-1',
+    title: 'End-Semester Practical Examination Schedule Released',
+    message: 'All III Year CSE, ECE, and IT students must verify lab batch allotments in the department notice board and carry their signed observation notebooks before November 28.',
+    audience: 'Students',
+    date: todayStr,
+    authorUid: 'mgmt-1',
+    authorName: 'Dr. Sundaravel K',
+    authorRole: 'Management',
+    pinned: true,
+  },
+  {
+    id: 'not-2',
+    title: 'Kurinji & Mullai Hostel Biometric Gate Timing',
+    message: 'Residents returning after 7:30 PM from city outings must log their movement on PSNA Connect and obtain Warden approval in advance.',
+    audience: 'Hostel',
+    date: todayStr,
+    authorUid: 'staff-warden',
+    authorName: 'Dr. Karthikeyan R',
+    authorRole: 'Warden',
+    pinned: true,
+  },
+  {
+    id: 'not-3',
+    title: 'NAAC Criterion III Research Data Submission',
+    message: 'Faculty members are requested to upload 2026 journal publications and funded project summaries to the IQAC portal before Friday 5:00 PM.',
+    audience: 'Staff',
+    date: yesterdayStr,
+    authorUid: 'mgmt-1',
+    authorName: 'Dr. Sundaravel K',
+    authorRole: 'Management',
+  },
+  {
+    id: 'not-4',
+    title: 'Campus Shuttle & Bus Bay Resurfacing Notice',
+    message: 'Morning buses will arrive at Gate 2 (Main Auditorium Plaza) for the next three days while Bay 1 resurfacing is completed.',
+    audience: 'All',
+    date: yesterdayStr,
+    authorUid: 'mgmt-1',
+    authorName: 'Dr. Sundaravel K',
+    authorRole: 'Management',
+  },
+  {
+    id: 'not-5',
+    title: 'CS3401 Mini-Project Demo Review Slots',
+    message: 'III CSE A teams 1 through 10 will present their database and algorithm project prototypes at CSE Lab 2 tomorrow afternoon.',
+    audience: 'Students',
+    date: todayStr,
+    authorUid: 'staff-1',
+    authorName: 'Prof. Meenakshi S',
+    authorRole: 'Staff',
+  },
+];
+
+export const SEED_EVENTS: CampusEvent[] = [
+  {
+    id: 'evt-1',
+    title: 'PSNA Smart Campus Hackathon Kickoff',
+    description: '24-hour inter-departmental engineering sprint focusing on sustainable energy, campus automation, and civic tools.',
+    date: todayStr,
+    time: '02:00 PM',
+    venue: 'Sri Ranganatha Auditorium',
+    audience: 'All',
+    organizerName: 'Dept of CSE & Innovation Cell',
+    createdByUid: 'staff-1',
+  },
+  {
+    id: 'evt-2',
+    title: 'Hostel Block Badminton & Table Tennis Finals',
+    description: 'Annual inter-block evening tournament for Kurinji and Mullai residents followed by special dinner.',
+    date: tomorrowStr,
+    time: '05:30 PM',
+    venue: 'PSNA Indoor Sports Complex',
+    audience: 'Hostel',
+    organizerName: 'Hostel Sports Committee',
+    createdByUid: 'staff-warden',
+  },
+  {
+    id: 'evt-3',
+    title: 'Faculty AI & Embedded Systems Pedagogy Workshop',
+    description: 'Hands-on curriculum modernization workshop for engineering faculty across all departments.',
+    date: plus5DaysStr,
+    time: '10:00 AM',
+    venue: 'Central Seminar Hall',
+    audience: 'Staff',
+    organizerName: 'Academic Council',
+    createdByUid: 'mgmt-1',
+  },
+];
+
+export const SEED_DOCUMENTS: CampusDocument[] = [
+  {
+    id: 'doc-1',
+    title: 'End-Semester Examination Guidelines & Timetable Circular',
+    category: 'Circular',
+    audience: 'All',
+    department: 'Controller of Examinations',
+    uploadedByUid: 'mgmt-1',
+    uploadedByName: 'Dr. Sundaravel K',
+    uploadedAt: todayStr,
+    fileName: 'PSNA_Exam_Circular_Nov2026.pdf',
+    summary: 'Official examination hall rules, reporting times, calculator regulations, and attendance eligibility norms (minimum 75%).',
+    sections: [
+      '1. Reporting Time: Candidates must occupy their allotted exam hall seats at least 15 minutes before the forenoon (09:30 AM) or afternoon (01:30 PM) session.',
+      '2. Hall Ticket & ID Card: Both the semester hall ticket and valid PSNA Student ID card are mandatory for hall entry.',
+      '3. Attendance Requirement: Students must maintain a minimum of 75% subject-wise attendance to be eligible for University End-Semester Theory Examinations.',
+      '4. Prohibited Items: Programmable smartwatches, mobile phones, and unauthorized reference slips are strictly barred inside examination halls.',
+    ],
+    pdfDataUrl: buildPdfDataUrl(
+      'End-Semester Examination Guidelines & Circular',
+      'Controller of Examinations · Audience: All · Nov 2026',
+      [
+        '1. Reporting Time: Candidates must occupy their allotted exam hall seats at least 15 minutes before the forenoon (09:30 AM) or afternoon (01:30 PM) session.',
+        '2. Hall Ticket & ID Card: Both the semester hall ticket and valid PSNA Student ID card are mandatory for hall entry.',
+        '3. Attendance Requirement: Students must maintain a minimum of 75% subject-wise attendance to be eligible for End-Semester Theory Examinations.',
+        '4. Prohibited Items: Smartwatches, mobile phones, and unauthorized reference materials are strictly barred inside examination halls.',
+      ]
+    ),
+  },
+  {
+    id: 'doc-2',
+    title: 'CS3401 Unit III — Graph Algorithms & Shortest Paths Notes',
+    category: 'Notes',
+    audience: 'Students',
+    department: 'Computer Science & Engineering',
+    uploadedByUid: 'staff-1',
+    uploadedByName: 'Prof. Meenakshi S',
+    uploadedAt: yesterdayStr,
+    fileName: 'CS3401_Unit3_Graphs_Notes.pdf',
+    summary: 'Concise lecture summary covering BFS, DFS, Topological Sort, Dijkstra, Bellman-Ford, and Floyd-Warshall complexities.',
+    sections: [
+      'Breadth-First Search (BFS): Uses a FIFO queue; explores graph level-by-level in O(V + E) time; guarantees shortest path in unweighted graphs.',
+      'Depth-First Search (DFS): Uses recursion/stack; classifies tree, back, forward, and cross edges; basis for topological sort and strongly connected components.',
+      'Dijkstra Algorithm: Greedy single-source shortest path for non-negative edge weights; runs in O((V + E) log V) with a binary min-heap.',
+      'Bellman-Ford Algorithm: Relaxes all E edges (V - 1) times in O(VE); detects negative weight cycles.',
+    ],
+    pdfDataUrl: buildPdfDataUrl(
+      'CS3401 Unit III - Graph Algorithms Lecture Notes',
+      'Prof. Meenakshi S · Dept of CSE · Audience: Students',
+      [
+        '1. Breadth-First Search (BFS): Uses a FIFO queue; explores graph level-by-level in O(V + E) time; finds shortest paths in unweighted graphs.',
+        '2. Depth-First Search (DFS): Uses recursion/stack; classifies edges and powers topological ordering for Directed Acyclic Graphs.',
+        '3. Dijkstra Algorithm: Greedy single-source shortest path for non-negative weights; runs in O((V + E) log V) using a min-priority queue.',
+        '4. Bellman-Ford Algorithm: Relaxes all E edges (V - 1) times in O(VE) and detects reachable negative-weight cycles.',
+      ]
+    ),
+  },
+  {
+    id: 'doc-3',
+    title: 'Hostel Mess, Outpass & Medical Protocol Handbook',
+    category: 'Circular',
+    audience: 'Hostel',
+    department: 'Hostel Administration',
+    uploadedByUid: 'staff-warden',
+    uploadedByName: 'Dr. Karthikeyan R',
+    uploadedAt: yesterdayStr,
+    fileName: 'PSNA_Hostel_Handbook_2026.pdf',
+    summary: 'Hostel curfew rules, mess serving windows, leave outpass procedures, and campus clinic emergency contacts.',
+    sections: [
+      '1. Mess Timings: Breakfast 07:15-08:45 AM, Lunch 12:15-01:45 PM, Evening Snacks 04:30-05:30 PM, Dinner 07:30-09:00 PM.',
+      '2. Outpass & Leave: Residents must update their daily status (In / Out / Leave) before leaving the hostel block and confirm with the Warden.',
+      '3. Quiet Hours & Study Time: Study hours are observed from 09:00 PM to 11:00 PM across Kurinji and Mullai blocks.',
+      '4. Campus Health Clinic: 24/7 nursing assistance is available at the Medical Block; Warden approval triggers immediate escort for off-campus care.',
+    ],
+    pdfDataUrl: buildPdfDataUrl(
+      'Hostel Mess, Outpass & Medical Protocol Handbook',
+      'Dr. Karthikeyan R (Warden) · Audience: Hostel Residents',
+      [
+        '1. Mess Timings: Breakfast 07:15-08:45 AM, Lunch 12:15-01:45 PM, Evening Snacks 04:30-05:30 PM, Dinner 07:30-09:00 PM.',
+        '2. Outpass & Leave: Residents must update their status (In / Out / Leave) in PSNA Connect before leaving the hostel block.',
+        '3. Study Hours: Quiet study hours are observed from 09:00 PM to 11:00 PM across Kurinji and Mullai blocks.',
+        '4. Campus Health Clinic: 24/7 nursing assistance is available at the Medical Block for all hostel residents.',
+      ]
+    ),
+  },
+];
+
+export const SEED_MEETINGS: CampusMeeting[] = [
+  {
+    id: 'meet-1',
+    title: 'CS3401 Doubt Clearing & Exam Prep Session',
+    hostUid: 'staff-1',
+    hostName: 'Prof. Meenakshi S',
+    department: 'Computer Science & Engineering',
+    audience: 'Students',
+    date: todayStr,
+    time: '04:00 PM',
+    joinUrl: 'https://meet.google.com/psna-cse-prep',
+    agenda: 'Review dynamic programming & graph shortest-path problems ahead of model exams.',
+  },
+  {
+    id: 'meet-2',
+    title: 'Hostel Mess Committee Monthly Review',
+    hostUid: 'staff-warden',
+    hostName: 'Dr. Karthikeyan R',
+    department: 'Hostel Administration',
+    audience: 'Hostel',
+    date: tomorrowStr,
+    time: '06:15 PM',
+    joinUrl: 'https://meet.google.com/psna-hostel-mess',
+    agenda: 'Collect resident feedback on next month menu rotation and dinner timings.',
+  },
+  {
+    id: 'meet-3',
+    title: 'Department HoDs & Academic Council Sync',
+    hostUid: 'mgmt-1',
+    hostName: 'Dr. Sundaravel K',
+    department: 'Administration',
+    audience: 'Staff',
+    date: plus5DaysStr,
+    time: '11:00 AM',
+    joinUrl: 'https://meet.google.com/psna-academic-sync',
+    agenda: 'Finalize semester lab external examiner panel and attendance condonation list.',
+  },
+];
+
+export const SEED_CHAT_THREADS: ChatThread[] = [
+  { id: 'class-iii-cse-a', type: 'class', title: 'III CSE A · Class Group', className: 'III CSE A' },
+  { id: 'class-iii-ece-b', type: 'class', title: 'III ECE B · Class Group', className: 'III ECE B' },
+  { id: 'hostel-main', type: 'hostel', title: 'PSNA Hostel Group (Warden & Residents)' },
+  {
+    id: 'dm-stu6-staff1',
+    type: 'dm',
+    title: 'Prof. Meenakshi S ↔ Kavya Dharshini S',
+    participantUids: ['staff-1', 'stu-6'],
+  },
+  {
+    id: 'dm-stu1-warden',
+    type: 'dm',
+    title: 'Dr. Karthikeyan R ↔ Aravindhan M',
+    participantUids: ['staff-warden', 'stu-1'],
+  },
+];
+
+export const SEED_CHAT_MESSAGES: ChatMessage[] = [
+  {
+    id: 'msg-1',
+    threadId: 'class-iii-cse-a',
+    senderUid: 'staff-1',
+    senderName: 'Prof. Meenakshi S',
+    senderRole: 'Staff',
+    text: 'Good morning III CSE A. Please bring your CS3401 lab manuals for today’s 10:30 AM session.',
+    createdAt: `${todayStr}T08:40:00Z`,
+  },
+  {
+    id: 'msg-2',
+    threadId: 'class-iii-cse-a',
+    senderUid: 'stu-6',
+    senderName: 'Kavya Dharshini S',
+    senderRole: 'Student',
+    text: 'Noted ma’am! Will the Unit III graph notes PDF be uploaded before noon?',
+    createdAt: `${todayStr}T08:44:00Z`,
+  },
+  {
+    id: 'msg-3',
+    threadId: 'class-iii-cse-a',
+    senderUid: 'staff-1',
+    senderName: 'Prof. Meenakshi S',
+    senderRole: 'Staff',
+    text: 'Yes, it is already available in the PDF Viewer tab under CS3401.',
+    createdAt: `${todayStr}T08:46:00Z`,
+  },
+  {
+    id: 'msg-4',
+    threadId: 'hostel-main',
+    senderUid: 'staff-warden',
+    senderName: 'Dr. Karthikeyan R',
+    senderRole: 'Warden',
+    text: 'Morning everyone! Breakfast is ready in the Kurinji & Mullai dining halls until 8:45 AM.',
+    createdAt: `${todayStr}T07:20:00Z`,
+  },
+  {
+    id: 'msg-5',
+    threadId: 'hostel-main',
+    senderUid: 'stu-1',
+    senderName: 'Aravindhan M',
+    senderRole: 'Hostel Resident',
+    text: 'Thank you sir. Also a quick reminder that K-201 tap maintenance was requested yesterday.',
+    createdAt: `${todayStr}T07:35:00Z`,
+  },
+];
+
+export const SEED_MAILS: MailMessage[] = [
+  {
+    id: 'mail-1',
+    fromUid: 'staff-1',
+    fromName: 'Prof. Meenakshi S',
+    fromEmail: 'meenakshi.cse@psnacet.edu.in',
+    toUid: 'stu-6',
+    toName: 'Kavya Dharshini S',
+    toEmail: 'kavya.cse@psnacet.edu.in',
+    subject: 'Mini-Project Abstract Approved — III CSE A',
+    body: 'Hi Kavya, your team’s smart campus energy monitor abstract is approved. Please prepare a 5-minute prototype demo for tomorrow’s review.',
+    sentAt: `${todayStr}T08:55:00Z`,
+    read: false,
+  },
+  {
+    id: 'mail-2',
+    fromUid: 'staff-warden',
+    fromName: 'Dr. Karthikeyan R',
+    fromEmail: 'warden.hostel@psnacet.edu.in',
+    toUid: 'stu-1',
+    toName: 'Aravindhan M',
+    toEmail: 'aravindhan.cse@psnacet.edu.in',
+    subject: 'Weekend Outpass Reminder',
+    body: 'Dear Aravindhan, please remember to switch your Hostel Status to Out or Leave if you are travelling to Oddanchatram this weekend.',
+    sentAt: `${yesterdayStr}T18:10:00Z`,
+    read: false,
+  },
+  {
+    id: 'mail-3',
+    fromUid: 'mgmt-1',
+    fromName: 'Dr. Sundaravel K',
+    fromEmail: 'principal.demo@psnacet.edu.in',
+    toUid: 'staff-1',
+    toName: 'Prof. Meenakshi S',
+    toEmail: 'meenakshi.cse@psnacet.edu.in',
+    subject: 'Hackathon Mentorship Duty Allocation',
+    body: 'Dear Prof. Meenakshi, kindly coordinate the CSE student teams at Sri Ranganatha Auditorium today at 2:00 PM.',
+    sentAt: `${todayStr}T08:15:00Z`,
+    read: true,
+  },
+];

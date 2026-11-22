@@ -1,0 +1,368 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public campus directory profile for a PSNA Connect user (excludes private PII).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["student", "staff", "management"] },
+        "isHostel": { "type": "boolean" },
+        "isWarden": { "type": "boolean" },
+        "department": { "type": "string", "maxLength": 80 },
+        "className": { "type": "string", "maxLength": 40 },
+        "registerNumber": { "type": "string", "maxLength": 32 },
+        "roomNumber": { "type": "string", "maxLength": 16 },
+        "block": { "type": "string", "maxLength": 32 },
+        "hostelStatus": { "type": "string", "enum": ["In", "Out", "Leave"] },
+        "requestedRole": { "type": "string", "enum": ["student", "hostel_resident", "staff", "warden", "management"] },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["uid", "name", "role", "isHostel", "isWarden", "department"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Strictly isolated PII, guardian contact, address, and medical records for a user/resident.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "guardianName": { "type": "string", "maxLength": 100 },
+        "guardianPhone": { "type": "string", "maxLength": 30 },
+        "address": { "type": "string", "maxLength": 300 },
+        "bloodGroup": { "type": "string", "maxLength": 10 },
+        "medicalNotes": { "type": "string", "maxLength": 500 },
+        "allergies": { "type": "string", "maxLength": 200 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 40 }
+      },
+      "required": ["uid", "email"]
+    },
+    "AttendanceSession": {
+      "title": "AttendanceSession",
+      "description": "Rotating 30-second QR attendance session started by staff.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffName": { "type": "string", "maxLength": 100 },
+        "subjectCode": { "type": "string", "maxLength": 20 },
+        "subjectName": { "type": "string", "maxLength": 100 },
+        "className": { "type": "string", "maxLength": 40 },
+        "department": { "type": "string", "maxLength": 80 },
+        "currentToken": { "type": "string", "maxLength": 64 },
+        "tokenIssuedAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "campusLat": { "type": "number" },
+        "campusLng": { "type": "number" },
+        "radiusMeters": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "staffUid", "subjectCode", "subjectName", "className", "currentToken", "active"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Student subject attendance record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentName": { "type": "string", "maxLength": 100 },
+        "registerNumber": { "type": "string", "maxLength": 32 },
+        "className": { "type": "string", "maxLength": 40 },
+        "subjectCode": { "type": "string", "maxLength": 20 },
+        "subjectName": { "type": "string", "maxLength": 100 },
+        "date": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["Present", "Absent"] },
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "markedVia": { "type": "string", "enum": ["QR", "Manual", "Seed"] },
+        "markedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "studentUid", "subjectCode", "date", "status"]
+    },
+    "StaffCheckin": {
+      "title": "StaffCheckin",
+      "description": "Daily campus location check-in for staff.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffName": { "type": "string", "maxLength": 100 },
+        "department": { "type": "string", "maxLength": 80 },
+        "date": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["Present", "Absent"] },
+        "checkinTime": { "type": "string", "maxLength": 40 },
+        "distanceMeters": { "type": "number" }
+      },
+      "required": ["id", "staffUid", "date", "status"]
+    },
+    "HostelRoom": {
+      "title": "HostelRoom",
+      "description": "Hostel room inventory and capacity.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomNumber": { "type": "string", "maxLength": 16 },
+        "block": { "type": "string", "maxLength": 32 },
+        "floor": { "type": "string", "maxLength": 20 },
+        "capacity": { "type": "number" },
+        "occupantUids": { "type": "array" }
+      },
+      "required": ["id", "roomNumber", "block", "capacity"]
+    },
+    "HostelMenu": {
+      "title": "HostelMenu",
+      "description": "Daily hostel mess menu and food-ready status.",
+      "type": "object",
+      "properties": {
+        "day": { "type": "string", "enum": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] },
+        "breakfast": { "type": "string", "maxLength": 240 },
+        "breakfastTime": { "type": "string", "maxLength": 40 },
+        "breakfastReady": { "type": "boolean" },
+        "lunch": { "type": "string", "maxLength": 240 },
+        "lunchTime": { "type": "string", "maxLength": 40 },
+        "lunchReady": { "type": "boolean" },
+        "snacks": { "type": "string", "maxLength": 240 },
+        "snacksTime": { "type": "string", "maxLength": 40 },
+        "snacksReady": { "type": "boolean" },
+        "dinner": { "type": "string", "maxLength": 240 },
+        "dinnerTime": { "type": "string", "maxLength": 40 },
+        "dinnerReady": { "type": "boolean" }
+      },
+      "required": ["day", "breakfast", "lunch", "snacks", "dinner"]
+    },
+    "HostelAttendanceLog": {
+      "title": "HostelAttendanceLog",
+      "description": "Daily hostel attendance status per resident.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "maxLength": 20 },
+        "residentUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "residentName": { "type": "string", "maxLength": 100 },
+        "roomNumber": { "type": "string", "maxLength": 16 },
+        "status": { "type": "string", "enum": ["In", "Out", "Leave"] },
+        "markedByUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "date", "residentUid", "status"]
+    },
+    "CanteenItem": {
+      "title": "CanteenItem",
+      "description": "Campus canteen menu item.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 40 },
+        "price": { "type": "number" },
+        "availableFrom": { "type": "string", "maxLength": 16 },
+        "availableTo": { "type": "string", "maxLength": 16 },
+        "isAvailable": { "type": "boolean" },
+        "veg": { "type": "boolean" }
+      },
+      "required": ["id", "name", "price", "isAvailable"]
+    },
+    "CanteenOrder": {
+      "title": "CanteenOrder",
+      "description": "Canteen order with token number and fulfillment status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tokenNumber": { "type": "number" },
+        "userUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "maxLength": 100 },
+        "userRole": { "type": "string", "maxLength": 30 },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["Placed", "Preparing", "Ready", "Collected"] },
+        "placedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "tokenNumber", "userUid", "items", "totalAmount", "status"]
+    },
+    "Notice": {
+      "title": "Notice",
+      "description": "Campus or hostel announcement notice.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 2000 },
+        "audience": { "type": "string", "enum": ["All", "Students", "Staff", "Hostel"] },
+        "date": { "type": "string", "maxLength": 20 },
+        "authorUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorName": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "title", "message", "audience", "date", "authorUid"]
+    },
+    "CampusEvent": {
+      "title": "CampusEvent",
+      "description": "Scheduled college or hostel event.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "date": { "type": "string", "maxLength": 20 },
+        "time": { "type": "string", "maxLength": 30 },
+        "venue": { "type": "string", "maxLength": 120 },
+        "audience": { "type": "string", "enum": ["All", "Students", "Staff", "Hostel"] },
+        "createdByUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "title", "date", "time", "venue", "audience"]
+    },
+    "ChatThread": {
+      "title": "ChatThread",
+      "description": "Chat room metadata for class groups, hostel group, or direct messages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["class", "hostel", "dm"] },
+        "title": { "type": "string", "maxLength": 100 },
+        "className": { "type": "string", "maxLength": 40 },
+        "participantUids": { "type": "array" }
+      },
+      "required": ["id", "type", "title"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual message inside a chat thread.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "threadId": { "type": "string", "maxLength": 128 },
+        "senderUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "maxLength": 100 },
+        "senderRole": { "type": "string", "maxLength": 40 },
+        "text": { "type": "string", "maxLength": 1500 },
+        "createdAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "threadId", "senderUid", "senderName", "text", "createdAt"]
+    },
+    "CampusDocument": {
+      "title": "CampusDocument",
+      "description": "PDF notes and official circulars.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 160 },
+        "category": { "type": "string", "enum": ["Notes", "Circular"] },
+        "audience": { "type": "string", "enum": ["All", "Students", "Staff", "Hostel"] },
+        "department": { "type": "string", "maxLength": 80 },
+        "uploadedByUid": { "type": "string", "maxLength": 128 },
+        "uploadedByName": { "type": "string", "maxLength": 100 },
+        "uploadedAt": { "type": "string", "maxLength": 40 },
+        "fileName": { "type": "string", "maxLength": 120 },
+        "summary": { "type": "string", "maxLength": 600 }
+      },
+      "required": ["id", "title", "category", "audience", "uploadedByUid"]
+    },
+    "MailMessage": {
+      "title": "MailMessage",
+      "description": "Internal campus mail item.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fromUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fromName": { "type": "string", "maxLength": 100 },
+        "fromEmail": { "type": "string", "maxLength": 120 },
+        "toUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "toName": { "type": "string", "maxLength": 100 },
+        "toEmail": { "type": "string", "maxLength": 120 },
+        "subject": { "type": "string", "maxLength": 180 },
+        "body": { "type": "string", "maxLength": 3000 },
+        "sentAt": { "type": "string", "maxLength": 40 },
+        "read": { "type": "boolean" }
+      },
+      "required": ["id", "fromUid", "toUid", "subject", "body", "sentAt"]
+    },
+    "CampusMeeting": {
+      "title": "CampusMeeting",
+      "description": "Scheduled online or hybrid meeting with join link.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 160 },
+        "hostUid": { "type": "string", "maxLength": 128 },
+        "hostName": { "type": "string", "maxLength": 100 },
+        "department": { "type": "string", "maxLength": 80 },
+        "audience": { "type": "string", "enum": ["All", "Students", "Staff", "Hostel"] },
+        "date": { "type": "string", "maxLength": 20 },
+        "time": { "type": "string", "maxLength": 30 },
+        "joinUrl": { "type": "string", "maxLength": 300 },
+        "agenda": { "type": "string", "maxLength": 600 }
+      },
+      "required": ["id", "title", "hostUid", "date", "time", "joinUrl", "audience"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public campus directory profiles without private PII."
+    },
+    "/userPrivate/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Private PII, guardian contacts, address, and medical records."
+    },
+    "/attendanceSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/AttendanceSession" },
+      "description": "Active QR attendance sessions managed by staff."
+    },
+    "/attendanceRecords/{recordId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Student attendance records by subject and date."
+    },
+    "/staffCheckins/{checkinId}": {
+      "schema": { "$ref": "#/entities/StaffCheckin" },
+      "description": "Staff campus check-in logs."
+    },
+    "/hostelRooms/{roomId}": {
+      "schema": { "$ref": "#/entities/HostelRoom" },
+      "description": "Hostel rooms and bed allotments."
+    },
+    "/hostelMenus/{dayId}": {
+      "schema": { "$ref": "#/entities/HostelMenu" },
+      "description": "Weekly hostel menu and meal readiness."
+    },
+    "/hostelAttendanceLogs/{logId}": {
+      "schema": { "$ref": "#/entities/HostelAttendanceLog" },
+      "description": "Daily hostel attendance logs."
+    },
+    "/canteenItems/{itemId}": {
+      "schema": { "$ref": "#/entities/CanteenItem" },
+      "description": "Canteen menu items."
+    },
+    "/canteenOrders/{orderId}": {
+      "schema": { "$ref": "#/entities/CanteenOrder" },
+      "description": "Canteen orders placed by students and staff."
+    },
+    "/notices/{noticeId}": {
+      "schema": { "$ref": "#/entities/Notice" },
+      "description": "Campus and hostel notices."
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "#/entities/CampusEvent" },
+      "description": "Scheduled campus and hostel events."
+    },
+    "/chatThreads/{threadId}": {
+      "schema": { "$ref": "#/entities/ChatThread" },
+      "description": "Chat channel metadata."
+    },
+    "/chatThreads/{threadId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Chat messages inside a thread."
+    },
+    "/documents/{docId}": {
+      "schema": { "$ref": "#/entities/CampusDocument" },
+      "description": "PDF notes and official circulars."
+    },
+    "/mails/{mailId}": {
+      "schema": { "$ref": "#/entities/MailMessage" },
+      "description": "Internal campus mail messages."
+    },
+    "/meetings/{meetingId}": {
+      "schema": { "$ref": "#/entities/CampusMeeting" },
+      "description": "Scheduled meetings with join links."
+    }
+  }
+}
