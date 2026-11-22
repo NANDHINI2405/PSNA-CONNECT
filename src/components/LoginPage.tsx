@@ -87,7 +87,7 @@ export function LoginPage() {
       <header className="relative w-full min-h-[160px] sm:min-h-[200px] py-8 sm:py-11 px-6 sm:px-10 bg-gradient-to-br from-blue-950 via-indigo-950 to-slate-950 overflow-hidden border-b border-slate-200 flex items-center">
         {!imgFailed && (
           <img
-            src="/assets/aistudio/image_2f658eee.png"
+            src={`${import.meta.env.BASE_URL}assets/aistudio/image_2f658eee.png`}
             alt="PSNA College of Engineering and Technology campus building in Dindigul"
             referrerPolicy="no-referrer"
             onError={() => setImgFailed(true)}
@@ -101,7 +101,7 @@ export function LoginPage() {
 
         <div className="relative z-10 max-w-4xl mx-auto w-full flex flex-col sm:flex-row items-center justify-center text-center sm:text-left gap-4">
           <img
-            src="/assets/aistudio/image_c4857b41.png"
+            src={`${import.meta.env.BASE_URL}assets/aistudio/image_c4857b41.png`}
             alt="PSNA College of Engineering and Technology crest and emblem"
             referrerPolicy="no-referrer"
             className="h-14 sm:h-16 w-auto max-w-full object-contain shrink-0 drop-shadow-md"

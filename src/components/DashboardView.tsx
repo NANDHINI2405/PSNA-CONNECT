@@ -146,7 +146,7 @@ export function DashboardView() {
       {/* Greeting Banner Card */}
       <section className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-900 p-6 sm:p-7 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <img
-          src="/assets/aistudio/image_2f658eee.png"
+          src={`${import.meta.env.BASE_URL}assets/aistudio/image_2f658eee.png`}
           alt="PSNA College of Engineering and Technology campus building"
           referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full object-cover opacity-45"
@@ -158,7 +158,7 @@ export function DashboardView() {
 
         <div className="relative z-10 space-y-3">
           <img
-            src="/assets/aistudio/image_c4857b41.png"
+            src={`${import.meta.env.BASE_URL}assets/aistudio/image_c4857b41.png`}
             alt="PSNA College of Engineering and Technology emblem"
             referrerPolicy="no-referrer"
             className="h-11 sm:h-12 w-auto max-w-full object-contain drop-shadow-sm"
