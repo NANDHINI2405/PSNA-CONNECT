@@ -87,7 +87,7 @@ export interface AppDataState {
   geofence: CampusGeofence;
 }
 
-const STORAGE_KEY = 'psna_connect_store_v1';
+const STORAGE_KEY = 'psna_connect_store_v2';
 const CACHED_NOTICES_KEY = 'psna_connect_cached_notices_v1';
 const DEMO_UID_KEY = 'psna_connect_demo_uid_v1';
 

@@ -71,12 +71,12 @@ export const SEED_USERS: UserProfile[] = [
   // 5 Hostel Residents across 3 rooms
   {
     uid: 'stu-1',
-    name: 'Aravindhan M',
+    name: 'Sonali',
     role: 'student',
     isHostel: true,
     isWarden: false,
     department: 'Computer Science & Engineering',
-    className: 'III CSE A',
+    className: 'ME CSE Year 1',
     registerNumber: '921324104001',
     roomNumber: 'K-201',
     block: 'Kurinji Hostel',
@@ -142,12 +142,12 @@ export const SEED_USERS: UserProfile[] = [
   // 3 Day Scholar Students
   {
     uid: 'stu-6',
-    name: 'Kavya Dharshini S',
+    name: 'Nandhini A',
     role: 'student',
     isHostel: false,
     isWarden: false,
     department: 'Computer Science & Engineering',
-    className: 'III CSE A',
+    className: 'ME CSE Year 1',
     registerNumber: '921324104025',
     createdAt: '2026-07-11T08:00:00Z',
   },
@@ -199,7 +199,7 @@ export const SEED_USER_PRIVATE: Record<string, UserPrivateInfo> = {
   },
   'stu-1': {
     uid: 'stu-1',
-    email: 'aravindhan.cse@psnacet.edu.in',
+    email: 'sonali.cse@psnacet.edu.in',
     phone: '+91 98000 00101',
     guardianName: 'Muruganandam P',
     guardianPhone: '+91 98000 10101',
@@ -259,7 +259,7 @@ export const SEED_USER_PRIVATE: Record<string, UserPrivateInfo> = {
   },
   'stu-6': {
     uid: 'stu-6',
-    email: 'kavya.cse@psnacet.edu.in',
+    email: 'nandhini.cse@psnacet.edu.in',
     phone: '+91 98000 00106',
     address: '7 Spencer Compound, Dindigul 624001',
     updatedAt: '2026-08-15T10:00:00Z',
@@ -284,14 +284,14 @@ export const DEMO_ACCOUNTS = [
   {
     uid: 'stu-6',
     label: 'Student',
-    subtitle: 'Kavya Dharshini S · III CSE A',
-    email: 'kavya.cse@psnacet.edu.in',
+    subtitle: 'Nandhini A · ME CSE Year 1',
+    email: 'nandhini.cse@psnacet.edu.in',
   },
   {
     uid: 'stu-1',
     label: 'Hostel Resident',
-    subtitle: 'Aravindhan M · Room K-201',
-    email: 'aravindhan.cse@psnacet.edu.in',
+    subtitle: 'Sonali · ME CSE Year 1 · Room K-201',
+    email: 'sonali.cse@psnacet.edu.in',
   },
   {
     uid: 'staff-1',
@@ -541,7 +541,7 @@ export const SEED_HOSTEL_MENUS: HostelMenu[] = DAYS.map((day, idx) => {
 });
 
 export const SEED_HOSTEL_ATTENDANCE_LOGS: HostelAttendanceLog[] = [
-  { id: `hlog-${todayStr}-stu-1`, date: todayStr, residentUid: 'stu-1', residentName: 'Aravindhan M', roomNumber: 'K-201', status: 'In', markedByUid: 'staff-warden' },
+  { id: `hlog-${todayStr}-stu-1`, date: todayStr, residentUid: 'stu-1', residentName: 'Sonali', roomNumber: 'K-201', status: 'In', markedByUid: 'staff-warden' },
   { id: `hlog-${todayStr}-stu-2`, date: todayStr, residentUid: 'stu-2', residentName: 'Praveen Kumar V', roomNumber: 'K-201', status: 'In', markedByUid: 'staff-warden' },
   { id: `hlog-${todayStr}-stu-3`, date: todayStr, residentUid: 'stu-3', residentName: 'Harish Balaji T', roomNumber: 'K-202', status: 'Out', markedByUid: 'staff-warden' },
   { id: `hlog-${todayStr}-stu-4`, date: todayStr, residentUid: 'stu-4', residentName: 'Sathishwaran P', roomNumber: 'K-202', status: 'In', markedByUid: 'staff-warden' },
@@ -566,7 +566,7 @@ export const SEED_CANTEEN_ORDERS: CanteenOrder[] = [
     id: 'ord-101',
     tokenNumber: 101,
     userUid: 'stu-6',
-    userName: 'Kavya Dharshini S',
+    userName: 'Nandhini A',
     userRole: 'Student',
     items: [
       { itemId: 'c1', name: 'Ghee Masala Dosa', qty: 1, price: 45 },
@@ -807,24 +807,43 @@ export const SEED_MEETINGS: CampusMeeting[] = [
 ];
 
 export const SEED_CHAT_THREADS: ChatThread[] = [
+  { id: 'class-me-cse-1', type: 'class', title: 'ME CSE Year 1 · Class Group', className: 'ME CSE Year 1' },
   { id: 'class-iii-cse-a', type: 'class', title: 'III CSE A · Class Group', className: 'III CSE A' },
   { id: 'class-iii-ece-b', type: 'class', title: 'III ECE B · Class Group', className: 'III ECE B' },
   { id: 'hostel-main', type: 'hostel', title: 'PSNA Hostel Group (Warden & Residents)' },
   {
     id: 'dm-stu6-staff1',
     type: 'dm',
-    title: 'Prof. Meenakshi S ↔ Kavya Dharshini S',
+    title: 'Prof. Meenakshi S ↔ Nandhini A',
     participantUids: ['staff-1', 'stu-6'],
   },
   {
     id: 'dm-stu1-warden',
     type: 'dm',
-    title: 'Dr. Karthikeyan R ↔ Aravindhan M',
+    title: 'Dr. Karthikeyan R ↔ Sonali',
     participantUids: ['staff-warden', 'stu-1'],
   },
 ];
 
 export const SEED_CHAT_MESSAGES: ChatMessage[] = [
+  {
+    id: 'msg-0',
+    threadId: 'class-me-cse-1',
+    senderUid: 'staff-1',
+    senderName: 'Prof. Meenakshi S',
+    senderRole: 'Staff',
+    text: 'Welcome ME CSE Year 1! Today’s CS3401 seminar notes are uploaded in the PDF Viewer tab.',
+    createdAt: `${todayStr}T08:35:00Z`,
+  },
+  {
+    id: 'msg-0b',
+    threadId: 'class-me-cse-1',
+    senderUid: 'stu-6',
+    senderName: 'Nandhini A',
+    senderRole: 'Student',
+    text: 'Thank you ma’am! Reviewing the seminar slides before the 10:30 AM session.',
+    createdAt: `${todayStr}T08:42:00Z`,
+  },
   {
     id: 'msg-1',
     threadId: 'class-iii-cse-a',
@@ -838,7 +857,7 @@ export const SEED_CHAT_MESSAGES: ChatMessage[] = [
     id: 'msg-2',
     threadId: 'class-iii-cse-a',
     senderUid: 'stu-6',
-    senderName: 'Kavya Dharshini S',
+    senderName: 'Nandhini A',
     senderRole: 'Student',
     text: 'Noted ma’am! Will the Unit III graph notes PDF be uploaded before noon?',
     createdAt: `${todayStr}T08:44:00Z`,
@@ -865,7 +884,7 @@ export const SEED_CHAT_MESSAGES: ChatMessage[] = [
     id: 'msg-5',
     threadId: 'hostel-main',
     senderUid: 'stu-1',
-    senderName: 'Aravindhan M',
+    senderName: 'Sonali',
     senderRole: 'Hostel Resident',
     text: 'Thank you sir. Also a quick reminder that K-201 tap maintenance was requested yesterday.',
     createdAt: `${todayStr}T07:35:00Z`,
@@ -879,10 +898,10 @@ export const SEED_MAILS: MailMessage[] = [
     fromName: 'Prof. Meenakshi S',
     fromEmail: 'meenakshi.cse@psnacet.edu.in',
     toUid: 'stu-6',
-    toName: 'Kavya Dharshini S',
-    toEmail: 'kavya.cse@psnacet.edu.in',
-    subject: 'Mini-Project Abstract Approved — III CSE A',
-    body: 'Hi Kavya, your team’s smart campus energy monitor abstract is approved. Please prepare a 5-minute prototype demo for tomorrow’s review.',
+    toName: 'Nandhini A',
+    toEmail: 'nandhini.cse@psnacet.edu.in',
+    subject: 'Mini-Project Abstract Approved — ME CSE Year 1',
+    body: 'Hi Nandhini, your team’s smart campus energy monitor abstract is approved. Please prepare a 5-minute prototype demo for tomorrow’s review.',
     sentAt: `${todayStr}T08:55:00Z`,
     read: false,
   },
@@ -892,10 +911,10 @@ export const SEED_MAILS: MailMessage[] = [
     fromName: 'Dr. Karthikeyan R',
     fromEmail: 'warden.hostel@psnacet.edu.in',
     toUid: 'stu-1',
-    toName: 'Aravindhan M',
-    toEmail: 'aravindhan.cse@psnacet.edu.in',
+    toName: 'Sonali',
+    toEmail: 'sonali.cse@psnacet.edu.in',
     subject: 'Weekend Outpass Reminder',
-    body: 'Dear Aravindhan, please remember to switch your Hostel Status to Out or Leave if you are travelling to Oddanchatram this weekend.',
+    body: 'Dear Sonali, please remember to switch your Hostel Status to Out or Leave if you are travelling to Oddanchatram this weekend.',
     sentAt: `${yesterdayStr}T18:10:00Z`,
     read: false,
   },

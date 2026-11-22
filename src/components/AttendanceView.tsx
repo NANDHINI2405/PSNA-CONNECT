@@ -789,6 +789,7 @@ function StaffAttendancePanel({
                         className="w-full h-11 px-3.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-900"
                       />
                       <datalist id="psna-class-options">
+                        <option value="ME CSE Year 1" />
                         <option value="III CSE A" />
                         <option value="III ECE B" />
                         <option value="III IT A" />
