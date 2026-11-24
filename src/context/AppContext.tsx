@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   AppDataState,
+  STORAGE_KEY,
   cacheNotices,
   canReadPrivateInfo,
   ensureFirebaseUserProfile,
@@ -37,10 +38,12 @@ import {
   ChatThread,
   DayOfWeek,
   EffectiveRole,
+  Gender,
   HostelAttendanceLog,
   HostelMenu,
   HostelRoom,
   HostelStatus,
+  HostelType,
   MailMessage,
   NavScreen,
   Notice,
@@ -49,6 +52,10 @@ import {
   UserPrivateInfo,
   UserProfile,
   getAllowedScreens,
+  getDefaultBlockForHostel,
+  getHostelTypeForGender,
+  getUserGender,
+  getUserHostelType,
 } from '../types';
 import { deleteField, doc, setDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
@@ -76,7 +83,8 @@ interface AppContextValue {
     email: string,
     password: string,
     department: string,
-    selectedRole: EffectiveRole
+    selectedRole: EffectiveRole,
+    gender?: Gender
   ) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
@@ -110,6 +118,7 @@ interface AppContextValue {
   createHostelRoom: (payload: {
     roomNumber: string;
     block: string;
+    hostelType: HostelType;
     floor: string;
     capacity: number;
   }) => Promise<HostelRoom>;
@@ -136,6 +145,7 @@ interface AppContextValue {
     type: 'class' | 'hostel';
     title: string;
     className?: string;
+    hostelType?: HostelType;
   }) => Promise<ChatThread>;
 
   // Documents, Mail, Meetings
@@ -149,6 +159,7 @@ interface AppContextValue {
     name: string;
     email: string;
     selectedRole: EffectiveRole;
+    gender: Gender;
     department: string;
     className?: string;
     registerNumber?: string;
@@ -162,7 +173,7 @@ interface AppContextValue {
   }) => Promise<UserProfile>;
   updateUserRoleAndFlags: (
     targetUid: string,
-    updates: { role: BaseRole; isHostel: boolean; isWarden: boolean }
+    updates: { role: BaseRole; isHostel: boolean; isWarden: boolean; gender?: Gender }
   ) => Promise<void>;
   updateGeofence: (geofence: CampusGeofence) => void;
   resetDemoData: () => void;
@@ -207,7 +218,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (dataMode !== 'demo') return;
     const onStorage = (e: StorageEvent) => {
-      if (e.key === 'psna_connect_store_v1' && e.newValue) {
+      if (e.key === STORAGE_KEY && e.newValue) {
         try {
           setState(JSON.parse(e.newValue) as AppDataState);
         } catch {
@@ -358,7 +369,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       email: string,
       password: string,
       department: string,
-      selectedRole: EffectiveRole
+      selectedRole: EffectiveRole,
+      gender: Gender = 'Girl'
     ) => {
       setAuthError(null);
       if (!name.trim() || !email.trim() || password.length < 6) {
@@ -372,7 +384,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           email.trim(),
           password,
           department,
-          selectedRole
+          selectedRole,
+          gender
         );
         setCurrentUser(profile);
         setActiveScreen('dashboard');
@@ -388,20 +401,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               : 'student';
           const isHostel = selectedRole === 'hostel_resident';
           const isWarden = selectedRole === 'warden';
+          const hostelType: HostelType | undefined =
+            isHostel || isWarden ? getHostelTypeForGender(gender) : undefined;
+          const defaultRoomId = hostelType === 'Girls Hostel' ? 'room-m105' : 'room-k203';
+          const defaultRoomNumber = hostelType === 'Girls Hostel' ? 'M-105' : 'K-203';
+          const defaultBlock = hostelType ? getDefaultBlockForHostel(hostelType) : undefined;
           const newUid = `${baseRole}-${Date.now()}`;
           const newUser: UserProfile = {
             uid: newUid,
             name: name.trim(),
             role: baseRole,
+            gender,
             isHostel,
             isWarden,
+            hostelType,
             department,
             className: isStudentRole ? 'III CSE A' : undefined,
             registerNumber: isStudentRole
               ? `921324${String(Math.floor(100000 + Math.random() * 899999))}`
               : undefined,
-            roomNumber: isHostel ? 'K-203' : undefined,
-            block: isHostel ? 'Kurinji Hostel' : undefined,
+            roomNumber: isHostel ? defaultRoomNumber : undefined,
+            block: defaultBlock,
             hostelStatus: isHostel ? 'In' : undefined,
             createdAt: new Date().toISOString(),
           };
@@ -413,12 +433,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               [newUid]: {
                 uid: newUid,
                 email: email.trim().toLowerCase(),
+                hostelType,
                 updatedAt: new Date().toISOString(),
               },
             },
             hostelRooms: isHostel
               ? prev.hostelRooms.map((r) =>
-                  r.id === 'room-k203' && r.occupantUids.length < r.capacity
+                  r.id === defaultRoomId && r.occupantUids.length < r.capacity
                     ? { ...r, occupantUids: [...r.occupantUids, newUid] }
                     : r
                 )
@@ -481,10 +502,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const getPrivateForUser = useCallback(
     (targetUid: string): UserPrivateInfo | null => {
-      if (!canReadPrivateInfo(currentUser, targetUid)) return null;
+      const targetUser = state.users.find((u) => u.uid === targetUid) || null;
+      if (!canReadPrivateInfo(currentUser, targetUid, targetUser)) return null;
       return state.userPrivate[targetUid] || null;
     },
-    [currentUser, state.userPrivate]
+    [currentUser, state.userPrivate, state.users]
   );
 
   const visibleNotices = useMemo(() => {
@@ -732,16 +754,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!currentUser || (!currentUser.isWarden && currentUser.role !== 'management')) {
         throw new Error('Only the Warden or Management can save hostel attendance.');
       }
+      const wardenHostel = currentUser.isWarden ? getUserHostelType(currentUser) : null;
       const todayStr = getTodayIso();
-      const newLogs: HostelAttendanceLog[] = entries.map((e) => ({
-        id: `hlog-${todayStr}-${e.residentUid}`,
-        date: todayStr,
-        residentUid: e.residentUid,
-        residentName: e.residentName,
-        roomNumber: e.roomNumber,
-        status: e.status,
-        markedByUid: currentUser.uid,
-      }));
+      const newLogs: HostelAttendanceLog[] = entries.map((e) => {
+        const resUser = state.users.find((u) => u.uid === e.residentUid);
+        const resHostel = getUserHostelType(resUser) || wardenHostel || 'Boys Hostel';
+        if (currentUser.isWarden && wardenHostel && resHostel !== wardenHostel) {
+          throw new Error(
+            `${wardenHostel} Warden can only mark attendance for ${wardenHostel} residents.`
+          );
+        }
+        return {
+          id: `hlog-${todayStr}-${e.residentUid}`,
+          date: todayStr,
+          residentUid: e.residentUid,
+          residentName: e.residentName,
+          roomNumber: e.roomNumber,
+          hostelType: resHostel,
+          status: e.status,
+          markedByUid: currentUser.uid,
+        };
+      });
 
       if (dataMode === 'firebase') {
         await Promise.all(
@@ -765,7 +798,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
       }
     },
-    [currentUser, dataMode, mutateDemoState]
+    [currentUser, dataMode, mutateDemoState, state.users]
   );
 
   const allotResidentRoom = useCallback(
@@ -775,6 +808,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       const targetRoom = state.hostelRooms.find((r) => r.id === targetRoomId);
       if (!targetRoom) throw new Error('Target room not found.');
+
+      const resident = state.users.find((u) => u.uid === residentUid);
+      if (!resident || !resident.isHostel) {
+        throw new Error('Only hostel residents can be allotted a hostel room.');
+      }
+
+      const residentGender = getUserGender(resident);
+      const expectedHostel = getHostelTypeForGender(residentGender);
+      if (targetRoom.hostelType !== expectedHostel) {
+        throw new Error(
+          targetRoom.hostelType === 'Girls Hostel'
+            ? 'Girls Hostel rooms are strictly for Girl residents only.'
+            : 'Boys Hostel rooms are strictly for Boy residents only.'
+        );
+      }
+
+      if (currentUser.isWarden) {
+        const wardenHostel = getUserHostelType(currentUser);
+        if (wardenHostel && targetRoom.hostelType !== wardenHostel) {
+          throw new Error(
+            `${wardenHostel} Warden can only allot rooms inside ${wardenHostel}.`
+          );
+        }
+      }
+
       if (
         !targetRoom.occupantUids.includes(residentUid) &&
         targetRoom.occupantUids.length >= targetRoom.capacity
@@ -792,13 +850,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (dataMode === 'firebase') {
         await Promise.all(
-          updatedRooms.map((r) =>
-            fbUpdateDoc('hostelRooms', r.id, { occupantUids: r.occupantUids })
-          )
+          updatedRooms
+            .filter((r) => currentUser.role === 'management' || r.hostelType === targetRoom.hostelType)
+            .map((r) => fbUpdateDoc('hostelRooms', r.id, { occupantUids: r.occupantUids }))
         );
         await fbUpdateDoc('users', residentUid, {
           roomNumber: targetRoom.roomNumber,
           block: targetRoom.block,
+          hostelType: targetRoom.hostelType,
         });
       } else {
         mutateDemoState((prev) => ({
@@ -806,27 +865,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           hostelRooms: updatedRooms,
           users: prev.users.map((u) =>
             u.uid === residentUid
-              ? { ...u, roomNumber: targetRoom.roomNumber, block: targetRoom.block }
+              ? {
+                  ...u,
+                  roomNumber: targetRoom.roomNumber,
+                  block: targetRoom.block,
+                  hostelType: targetRoom.hostelType,
+                }
               : u
           ),
         }));
       }
     },
-    [currentUser, dataMode, mutateDemoState, state.hostelRooms]
+    [currentUser, dataMode, mutateDemoState, state.hostelRooms, state.users]
   );
 
   const createHostelRoom = useCallback(
     async (payload: {
       roomNumber: string;
       block: string;
+      hostelType: HostelType;
       floor: string;
       capacity: number;
     }): Promise<HostelRoom> => {
       if (!currentUser || (!currentUser.isWarden && currentUser.role !== 'management')) {
         throw new Error('Only Warden or Management can add hostel rooms.');
       }
+      const wardenHostel = currentUser.isWarden ? getUserHostelType(currentUser) : null;
+      const resolvedHostelType = wardenHostel || payload.hostelType;
+      if (currentUser.isWarden && wardenHostel && payload.hostelType !== wardenHostel) {
+        throw new Error(`${wardenHostel} Warden can only add rooms to ${wardenHostel}.`);
+      }
       const roomNum = payload.roomNumber.trim().slice(0, 16);
-      const block = payload.block.trim().slice(0, 32);
+      const block =
+        payload.block.trim().slice(0, 32) || getDefaultBlockForHostel(resolvedHostelType);
       const floor = payload.floor.trim().slice(0, 20) || '1st Floor';
       const capacity = Math.min(6, Math.max(1, Number(payload.capacity) || 2));
       if (!roomNum || !block) {
@@ -836,6 +907,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         id: `room-${Date.now()}`,
         roomNumber: roomNum,
         block,
+        hostelType: resolvedHostelType,
         floor,
         capacity,
         occupantUids: [],
@@ -861,10 +933,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ) {
         throw new Error('You are not authorized to update these personal or medical details.');
       }
+      const targetUser = state.users.find((u) => u.uid === targetUid);
+      if (currentUser.isWarden && currentUser.uid !== targetUid) {
+        const wardenHostel = getUserHostelType(currentUser);
+        const targetHostel = getUserHostelType(targetUser);
+        if (!targetUser?.isHostel || !wardenHostel || targetHostel !== wardenHostel) {
+          throw new Error(
+            `${wardenHostel || 'Hostel'} Warden can only edit records for residents of their own hostel.`
+          );
+        }
+      }
       const existing = state.userPrivate[targetUid];
+      const targetHostel = targetUser?.isHostel || targetUser?.isWarden ? getUserHostelType(targetUser) || undefined : undefined;
       const merged: UserPrivateInfo = {
         uid: targetUid,
         email: (updates.email ?? existing?.email ?? `${targetUid}@psnacet.edu.in`).slice(0, 120),
+        hostelType: existing?.hostelType || targetHostel,
         phone: updates.phone !== undefined ? updates.phone.slice(0, 30) : existing?.phone,
         guardianName:
           updates.guardianName !== undefined
@@ -900,7 +984,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }));
       }
     },
-    [currentUser, dataMode, mutateDemoState, state.userPrivate]
+    [currentUser, dataMode, mutateDemoState, state.userPrivate, state.users]
   );
 
   // --- Canteen ---
@@ -1131,10 +1215,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       type: 'class' | 'hostel';
       title: string;
       className?: string;
+      hostelType?: HostelType;
     }): Promise<ChatThread> => {
       if (!currentUser || (currentUser.role !== 'staff' && currentUser.role !== 'management')) {
         throw new Error('Only Staff or Management can create group chat channels.');
       }
+      const resolvedHostelType =
+        payload.type === 'hostel'
+          ? currentUser.isWarden
+            ? getUserHostelType(currentUser) || 'Boys Hostel'
+            : payload.hostelType || 'Boys Hostel'
+          : undefined;
       const thread: ChatThread = {
         id: `grp-${Date.now()}`,
         type: payload.type,
@@ -1143,6 +1234,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           payload.type === 'class' && payload.className?.trim()
             ? payload.className.trim().slice(0, 40)
             : undefined,
+        hostelType: resolvedHostelType,
       };
       if (dataMode === 'firebase') {
         await fbSetDoc('chatThreads', thread.id, thread);
@@ -1247,6 +1339,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       name: string;
       email: string;
       selectedRole: EffectiveRole;
+      gender: Gender;
       department: string;
       className?: string;
       registerNumber?: string;
@@ -1271,17 +1364,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : 'student';
       const isHostel = payload.selectedRole === 'hostel_resident';
       const isWarden = payload.selectedRole === 'warden';
+      const hostelType: HostelType | undefined =
+        isHostel || isWarden ? getHostelTypeForGender(payload.gender) : undefined;
       const uid = `${baseRole}-${Date.now()}`;
       const chosenRoom = isHostel
         ? state.hostelRooms.find((r) => r.id === payload.roomId)
         : undefined;
 
+      if (chosenRoom && hostelType && chosenRoom.hostelType !== hostelType) {
+        throw new Error(
+          chosenRoom.hostelType === 'Girls Hostel'
+            ? 'Girls Hostel rooms are strictly for Girl residents only.'
+            : 'Boys Hostel rooms are strictly for Boy residents only.'
+        );
+      }
+
       const profile: UserProfile = {
         uid,
         name: payload.name.trim().slice(0, 100),
         role: baseRole,
+        gender: payload.gender,
         isHostel,
         isWarden,
+        hostelType,
         department: payload.department.trim().slice(0, 80),
         className: isStudentRole ? (payload.className?.trim() || 'III CSE A').slice(0, 40) : undefined,
         registerNumber: isStudentRole
@@ -1291,7 +1396,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ).slice(0, 32)
           : undefined,
         roomNumber: chosenRoom?.roomNumber,
-        block: chosenRoom?.block,
+        block: chosenRoom?.block || (hostelType ? getDefaultBlockForHostel(hostelType) : undefined),
         hostelStatus: isHostel ? 'In' : undefined,
         createdAt: new Date().toISOString(),
       };
@@ -1299,6 +1404,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const privRaw: UserPrivateInfo = {
         uid,
         email: payload.email.trim().toLowerCase().slice(0, 120),
+        hostelType,
         phone: payload.phone?.trim().slice(0, 30) || undefined,
         guardianName: payload.guardianName?.trim().slice(0, 100) || undefined,
         guardianPhone: payload.guardianPhone?.trim().slice(0, 30) || undefined,
@@ -1344,24 +1450,81 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const updateUserRoleAndFlags = useCallback(
     async (
       targetUid: string,
-      updates: { role: BaseRole; isHostel: boolean; isWarden: boolean }
+      updates: { role: BaseRole; isHostel: boolean; isWarden: boolean; gender?: Gender }
     ) => {
       if (!currentUser || currentUser.role !== 'management') {
         throw new Error('Only Management can modify user roles and flags.');
       }
-      const normalized = {
+      const targetUser = state.users.find((u) => u.uid === targetUid);
+      const resolvedGender = updates.gender || getUserGender(targetUser);
+      const isHostel = updates.role === 'student' ? updates.isHostel : false;
+      const isWarden = updates.role === 'staff' ? updates.isWarden : false;
+      const resolvedHostelType: HostelType | undefined =
+        isHostel || isWarden ? getHostelTypeForGender(resolvedGender) : undefined;
+      const genderChanged = Boolean(targetUser && resolvedGender !== getUserGender(targetUser));
+      const clearRoom = !isHostel || genderChanged;
+
+      const normalized: Partial<UserProfile> = {
         role: updates.role,
-        isHostel: updates.role === 'student' ? updates.isHostel : false,
-        isWarden: updates.role === 'staff' ? updates.isWarden : false,
+        gender: resolvedGender,
+        isHostel,
+        isWarden,
+        hostelType: resolvedHostelType,
+        block: resolvedHostelType ? getDefaultBlockForHostel(resolvedHostelType) : undefined,
+        roomNumber: clearRoom ? undefined : targetUser?.roomNumber,
       };
       if (dataMode === 'firebase') {
-        await fbUpdateDoc('users', targetUid, { ...normalized, requestedRole: deleteField() });
+        const patch: Record<string, unknown> = {
+          role: normalized.role,
+          gender: normalized.gender,
+          isHostel: normalized.isHostel,
+          isWarden: normalized.isWarden,
+          requestedRole: deleteField(),
+          hostelType: resolvedHostelType ?? deleteField(),
+          block: normalized.block ?? deleteField(),
+        };
+        if (clearRoom) {
+          patch.roomNumber = deleteField();
+        }
+        await fbUpdateDoc('users', targetUid, patch);
+        if (state.userPrivate[targetUid]) {
+          await fbUpdateDoc('userPrivate', targetUid, {
+            hostelType: resolvedHostelType ?? deleteField(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        if (clearRoom) {
+          const affectedRooms = state.hostelRooms.filter((r) => r.occupantUids.includes(targetUid));
+          await Promise.all(
+            affectedRooms.map((r) =>
+              fbUpdateDoc('hostelRooms', r.id, {
+                occupantUids: r.occupantUids.filter((id) => id !== targetUid),
+              })
+            )
+          );
+        }
       } else {
         mutateDemoState((prev) => ({
           ...prev,
+          hostelRooms: clearRoom
+            ? prev.hostelRooms.map((r) => ({
+                ...r,
+                occupantUids: r.occupantUids.filter((id) => id !== targetUid),
+              }))
+            : prev.hostelRooms,
           users: prev.users.map((u) =>
             u.uid === targetUid ? { ...u, ...normalized, requestedRole: undefined } : u
           ),
+          userPrivate: prev.userPrivate[targetUid]
+            ? {
+                ...prev.userPrivate,
+                [targetUid]: {
+                  ...prev.userPrivate[targetUid],
+                  hostelType: resolvedHostelType,
+                  updatedAt: new Date().toISOString(),
+                },
+              }
+            : prev.userPrivate,
         }));
         if (currentUser.uid === targetUid) {
           setCurrentUser((prev) =>
@@ -1370,7 +1533,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [currentUser, dataMode, mutateDemoState]
+    [currentUser, dataMode, mutateDemoState, state.hostelRooms, state.userPrivate, state.users]
   );
 
   const updateGeofence = useCallback(
@@ -1381,7 +1544,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const resetDemoData = useCallback(() => {
-    localStorage.removeItem('psna_connect_store_v1');
+    localStorage.removeItem(STORAGE_KEY);
     const fresh = loadLocalState();
     setState(fresh);
     if (currentUser) {
@@ -1394,7 +1557,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const scopedState = useMemo<AppDataState>(
     () => ({
       ...state,
-      userPrivate: filterPrivateMapForRole(currentUser, state.userPrivate),
+      userPrivate: filterPrivateMapForRole(currentUser, state.userPrivate, state.users),
     }),
     [currentUser, state]
   );

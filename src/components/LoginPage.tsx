@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { DEMO_ACCOUNTS } from '../data/seedData';
 import { useApp } from '../context/AppContext';
-import { EffectiveRole } from '../types';
+import { EffectiveRole, Gender, getHostelTypeForGender } from '../types';
 
 const DEPARTMENTS = [
   'Computer Science & Engineering',
@@ -47,6 +47,7 @@ export function LoginPage() {
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [selectedRole, setSelectedRole] = useState<EffectiveRole>('student');
+  const [gender, setGender] = useState<Gender>('Girl');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -62,20 +63,22 @@ export function LoginPage() {
     if (mode === 'signin') {
       await loginWithEmail(email, password);
     } else {
-      await signUpWithEmail(name, email, password, department, selectedRole);
+      await signUpWithEmail(name, email, password, department, selectedRole, gender);
     }
   };
 
   const roleIcon = (label: string) => {
+    if (label.includes('Hostel Resident')) {
+      return <Home className="w-4 h-4 text-indigo-600" />;
+    }
+    if (label.includes('Warden')) {
+      return <ShieldCheck className="w-4 h-4 text-indigo-700" />;
+    }
     switch (label) {
       case 'Student':
         return <GraduationCap className="w-4 h-4 text-blue-600" />;
-      case 'Hostel Resident':
-        return <Home className="w-4 h-4 text-indigo-600" />;
       case 'Staff':
         return <UserCheck className="w-4 h-4 text-blue-700" />;
-      case 'Warden':
-        return <ShieldCheck className="w-4 h-4 text-indigo-700" />;
       default:
         return <Building2 className="w-4 h-4 text-slate-700" />;
     }
@@ -202,6 +205,27 @@ export function LoginPage() {
                           </button>
                         );
                       })}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Gender {(selectedRole === 'hostel_resident' || selectedRole === 'warden') ? `(${getHostelTypeForGender(gender)} Only)` : ''}
+                    </label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {(['Girl', 'Boy'] as Gender[]).map((g) => (
+                        <button
+                          key={g}
+                          type="button"
+                          onClick={() => setGender(g)}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-medium transition-colors ${
+                            gender === g
+                              ? 'border-blue-600 bg-blue-50 text-blue-800'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          {g === 'Girl' ? 'Girl / Female' : 'Boy / Male'}
+                        </button>
+                      ))}
                     </div>
                   </div>
                   <div>

@@ -11,7 +11,17 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getTodayIso } from '../services/dataService';
-import { BaseRole, EffectiveRole, UserProfile, getEffectiveRole } from '../types';
+import {
+  BaseRole,
+  EffectiveRole,
+  Gender,
+  HostelType,
+  UserProfile,
+  getEffectiveRole,
+  getHostelTypeForGender,
+  getUserGender,
+  getUserHostelType,
+} from '../types';
 import { getBrowserLocation } from '../utils/geo';
 
 function formatRequestedRole(role: EffectiveRole): string {
@@ -66,6 +76,7 @@ export function ManagementView() {
   const [roleFilter, setRoleFilter] = useState<'all' | BaseRole>('all');
   const [canteenStatusFilter, setCanteenStatusFilter] = useState<string>('All');
   const [hostelStatusFilter, setHostelStatusFilter] = useState<string>('All');
+  const [hostelWingFilter, setHostelWingFilter] = useState<'All' | HostelType>('All');
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [seeding, setSeeding] = useState(false);
 
@@ -74,6 +85,7 @@ export function ManagementView() {
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newRole, setNewRole] = useState<EffectiveRole>('student');
+  const [newGender, setNewGender] = useState<Gender>('Girl');
   const [newDept, setNewDept] = useState('Computer Science & Engineering');
   const [newClass, setNewClass] = useState('III CSE A');
   const [newRegNo, setNewRegNo] = useState('');
@@ -151,16 +163,18 @@ export function ManagementView() {
 
   const filteredHostel = useMemo(() => {
     return hostelResidents.filter((r) => {
+      if (hostelWingFilter !== 'All' && getUserHostelType(r) !== hostelWingFilter) return false;
       const st = r.hostelStatus || 'In';
       if (hostelStatusFilter !== 'All' && st !== hostelStatusFilter) return false;
       if (!q) return true;
       return (
         r.name.toLowerCase().includes(q) ||
         (r.roomNumber || '').toLowerCase().includes(q) ||
-        (r.className || '').toLowerCase().includes(q)
+        (r.className || '').toLowerCase().includes(q) ||
+        (getUserHostelType(r) || '').toLowerCase().includes(q)
       );
     });
-  }, [hostelResidents, hostelStatusFilter, q]);
+  }, [hostelResidents, hostelWingFilter, hostelStatusFilter, q]);
 
   const filteredOrders = useMemo(() => {
     return state.canteenOrders.filter((o) => {
@@ -175,13 +189,16 @@ export function ManagementView() {
   }, [state.canteenOrders, canteenStatusFilter, q]);
 
   const filteredRooms = useMemo(() => {
-    return state.hostelRooms.filter(
-      (rm) =>
-        !q ||
+    return state.hostelRooms.filter((rm) => {
+      if (hostelWingFilter !== 'All' && rm.hostelType !== hostelWingFilter) return false;
+      if (!q) return true;
+      return (
         rm.roomNumber.toLowerCase().includes(q) ||
-        rm.block.toLowerCase().includes(q)
-    );
-  }, [state.hostelRooms, q]);
+        rm.block.toLowerCase().includes(q) ||
+        rm.hostelType.toLowerCase().includes(q)
+      );
+    });
+  }, [state.hostelRooms, hostelWingFilter, q]);
 
   const pendingRoleUsers = useMemo(
     () =>
@@ -194,7 +211,10 @@ export function ManagementView() {
   const handleApproveRequestedRole = async (target: UserProfile) => {
     if (!target.requestedRole) return;
     const requested = target.requestedRole;
-    await updateUserRoleAndFlags(target.uid, mapEffectiveRoleToFlags(requested));
+    await updateUserRoleAndFlags(target.uid, {
+      ...mapEffectiveRoleToFlags(requested),
+      gender: getUserGender(target),
+    });
     setActionMsg(
       `Approved ${target.name} as ${formatRequestedRole(requested)}.`
     );
@@ -209,6 +229,7 @@ export function ManagementView() {
         name: newName,
         email: newEmail,
         selectedRole: newRole,
+        gender: newGender,
         department: newDept,
         className: newClass,
         registerNumber: newRegNo,
@@ -221,9 +242,9 @@ export function ManagementView() {
         medicalNotes: newMedicalNotes,
       });
       setActionMsg(
-        `Added ${created.name} (${formatRequestedRole(newRole)}) to ${
-          dataMode === 'firebase' ? 'Cloud Firestore' : 'Local Demo Store'
-        }.`
+        `Added ${created.name} (${formatRequestedRole(newRole)}${
+          created.hostelType ? ` · ${created.hostelType}` : ''
+        }) to ${dataMode === 'firebase' ? 'Cloud Firestore' : 'Local Demo Store'}.`
       );
       setNewName('');
       setNewEmail('');
@@ -447,17 +468,30 @@ export function ManagementView() {
               </div>
             )}
 
-            {tab === 'hostel' && (
-              <select
-                value={hostelStatusFilter}
-                onChange={(e) => setHostelStatusFilter(e.target.value)}
-                className="h-10 px-3 rounded-xl border border-slate-200 text-xs font-medium bg-white"
-              >
-                <option value="All">All Statuses</option>
-                <option value="In">In</option>
-                <option value="Out">Out</option>
-                <option value="Leave">Leave</option>
-              </select>
+            {(tab === 'hostel' || tab === 'rooms') && (
+              <div className="flex items-center gap-2">
+                <select
+                  value={hostelWingFilter}
+                  onChange={(e) => setHostelWingFilter(e.target.value as 'All' | HostelType)}
+                  className="h-10 px-3 rounded-xl border border-slate-200 text-xs font-medium bg-white"
+                >
+                  <option value="All">All Hostels</option>
+                  <option value="Boys Hostel">Boys Hostel (Boys Only)</option>
+                  <option value="Girls Hostel">Girls Hostel (Girls Only)</option>
+                </select>
+                {tab === 'hostel' && (
+                  <select
+                    value={hostelStatusFilter}
+                    onChange={(e) => setHostelStatusFilter(e.target.value)}
+                    className="h-10 px-3 rounded-xl border border-slate-200 text-xs font-medium bg-white"
+                  >
+                    <option value="All">All Statuses</option>
+                    <option value="In">In</option>
+                    <option value="Out">Out</option>
+                    <option value="Leave">Leave</option>
+                  </select>
+                )}
+              </div>
             )}
 
             {tab === 'canteen' && (
@@ -541,6 +575,22 @@ export function ManagementView() {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
+                      Gender {newRole === 'hostel_resident' || newRole === 'warden' ? '(Sets Hostel Wing)' : ''}
+                    </label>
+                    <select
+                      value={newGender}
+                      onChange={(e) => {
+                        setNewGender(e.target.value as Gender);
+                        setNewRoomId('');
+                      }}
+                      className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                    >
+                      <option value="Girl">Girl / Female ({getHostelTypeForGender('Girl')})</option>
+                      <option value="Boy">Boy / Male ({getHostelTypeForGender('Boy')})</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
                       Department
                     </label>
                     <input
@@ -584,16 +634,20 @@ export function ManagementView() {
                   {newRole === 'hostel_resident' && (
                     <div>
                       <label className="block text-xs font-medium text-slate-600 mb-1">
-                        Assign Hostel Room
+                        Assign {getHostelTypeForGender(newGender)} Room
                       </label>
                       <select
                         value={newRoomId}
                         onChange={(e) => setNewRoomId(e.target.value)}
                         className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
                       >
-                        <option value="">Unassigned</option>
+                        <option value="">Unassigned ({getHostelTypeForGender(newGender)})</option>
                         {state.hostelRooms
-                          .filter((r) => r.occupantUids.length < r.capacity)
+                          .filter(
+                            (r) =>
+                              r.hostelType === getHostelTypeForGender(newGender) &&
+                              r.occupantUids.length < r.capacity
+                          )
                           .map((r) => (
                             <option key={r.id} value={r.id}>
                               {r.roomNumber} · {r.block} ({r.occupantUids.length}/{r.capacity})
@@ -738,6 +792,7 @@ export function ManagementView() {
                   <tr className="border-b border-slate-200 text-xs text-slate-500">
                     <th className="py-2.5 pr-4 font-medium">User</th>
                     <th className="py-2.5 pr-4 font-medium">Department / Class</th>
+                    <th className="py-2.5 pr-4 font-medium">Gender / Wing</th>
                     <th className="py-2.5 pr-4 font-medium">Base Role</th>
                     <th className="py-2.5 pr-4 font-medium">Hostel Flag</th>
                     <th className="py-2.5 pr-4 font-medium">Warden Flag</th>
@@ -748,6 +803,8 @@ export function ManagementView() {
                   {filteredUsers.map((u) => {
                     const hasPendingRequest =
                       Boolean(u.requestedRole) && u.requestedRole !== getEffectiveRole(u);
+                    const userGender = getUserGender(u);
+                    const wing = getUserHostelType(u);
                     return (
                       <tr key={u.uid}>
                         <td className="py-3 pr-4">
@@ -762,6 +819,27 @@ export function ManagementView() {
                         </td>
                         <td className="py-3 pr-4">
                           <select
+                            aria-label={`Gender for ${u.name}`}
+                            value={userGender}
+                            onChange={(e) =>
+                              updateUserRoleAndFlags(u.uid, {
+                                role: u.role,
+                                isHostel: u.isHostel,
+                                isWarden: u.isWarden,
+                                gender: e.target.value as Gender,
+                              })
+                            }
+                            className="h-9 px-2.5 rounded-lg border border-slate-200 bg-white text-xs font-medium"
+                          >
+                            <option value="Girl">Girl</option>
+                            <option value="Boy">Boy</option>
+                          </select>
+                          {wing && (
+                            <div className="text-[11px] text-blue-700 font-medium mt-0.5">{wing}</div>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <select
                             aria-label={`Role for ${u.name}`}
                             value={u.role}
                             onChange={(e) =>
@@ -769,6 +847,7 @@ export function ManagementView() {
                                 role: e.target.value as BaseRole,
                                 isHostel: u.isHostel,
                                 isWarden: u.isWarden,
+                                gender: userGender,
                               })
                             }
                             className="h-9 px-2.5 rounded-lg border border-slate-200 bg-white text-xs font-medium"
@@ -787,6 +866,7 @@ export function ManagementView() {
                                 role: u.role,
                                 isHostel: !u.isHostel,
                                 isWarden: u.isWarden,
+                                gender: userGender,
                               })
                             }
                             className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium disabled:opacity-40 ${
@@ -807,6 +887,7 @@ export function ManagementView() {
                                 role: u.role,
                                 isHostel: u.isHostel,
                                 isWarden: !u.isWarden,
+                                gender: userGender,
                               })
                             }
                             className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium disabled:opacity-40 ${
@@ -890,6 +971,7 @@ export function ManagementView() {
               <thead>
                 <tr className="border-b border-slate-200 text-xs text-slate-500">
                   <th className="py-2.5 pr-4 font-medium">Resident</th>
+                  <th className="py-2.5 pr-4 font-medium">Hostel Wing</th>
                   <th className="py-2.5 pr-4 font-medium">Class</th>
                   <th className="py-2.5 pr-4 font-medium">Room & Block</th>
                   <th className="py-2.5 font-medium">Status</th>
@@ -899,6 +981,9 @@ export function ManagementView() {
                 {filteredHostel.map((r) => (
                   <tr key={r.uid}>
                     <td className="py-3 pr-4 font-medium text-slate-900">{r.name}</td>
+                    <td className="py-3 pr-4 text-xs font-medium text-blue-700">
+                      {getUserHostelType(r) || 'Hostel'} ({getUserGender(r)})
+                    </td>
                     <td className="py-3 pr-4 text-slate-600">{r.className}</td>
                     <td className="py-3 pr-4 text-slate-600">
                       {r.roomNumber || 'Unassigned'} · {r.block || 'Hostel'}
@@ -953,6 +1038,7 @@ export function ManagementView() {
               <thead>
                 <tr className="border-b border-slate-200 text-xs text-slate-500">
                   <th className="py-2.5 pr-4 font-medium">Room</th>
+                  <th className="py-2.5 pr-4 font-medium">Hostel Wing</th>
                   <th className="py-2.5 pr-4 font-medium">Block & Floor</th>
                   <th className="py-2.5 pr-4 font-medium">Occupancy</th>
                   <th className="py-2.5 font-medium">Occupants</th>
@@ -965,6 +1051,9 @@ export function ManagementView() {
                     <tr key={rm.id}>
                       <td className="py-3 pr-4 font-mono font-semibold text-slate-900">
                         {rm.roomNumber}
+                      </td>
+                      <td className="py-3 pr-4 text-xs font-medium text-blue-700">
+                        {rm.hostelType} ({rm.hostelType === 'Girls Hostel' ? 'Girls Only' : 'Boys Only'})
                       </td>
                       <td className="py-3 pr-4 text-slate-600">
                         {rm.block} · {rm.floor}

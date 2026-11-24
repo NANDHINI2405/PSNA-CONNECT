@@ -53,6 +53,7 @@ import {
   ChatMessage,
   ChatThread,
   DayOfWeek,
+  Gender,
   HostelAttendanceLog,
   HostelMenu,
   HostelRoom,
@@ -63,6 +64,7 @@ import {
   StaffCheckin,
   UserPrivateInfo,
   UserProfile,
+  getUserHostelType,
 } from '../types';
 import { DEFAULT_CAMPUS_GEOFENCE } from '../utils/geo';
 
@@ -87,7 +89,7 @@ export interface AppDataState {
   geofence: CampusGeofence;
 }
 
-const STORAGE_KEY = 'psna_connect_store_v2';
+export const STORAGE_KEY = 'psna_connect_store_v3';
 const CACHED_NOTICES_KEY = 'psna_connect_cached_notices_v1';
 const DEMO_UID_KEY = 'psna_connect_demo_uid_v1';
 
@@ -178,21 +180,48 @@ export function setSavedDemoUid(uid: string | null): void {
   }
 }
 
-export function canReadPrivateInfo(requester: UserProfile | null, targetUid: string): boolean {
+export function canReadPrivateInfo(
+  requester: UserProfile | null,
+  targetUid: string,
+  targetUser?: UserProfile | null
+): boolean {
   if (!requester) return false;
   if (requester.uid === targetUid) return true;
   if (requester.role === 'management') return true;
-  if (requester.role === 'staff' && requester.isWarden) return true;
+  if (requester.role === 'staff' && requester.isWarden) {
+    if (!targetUser) return false;
+    if (!targetUser.isHostel) return false;
+    const wardenHostel = getUserHostelType(requester);
+    const residentHostel = getUserHostelType(targetUser);
+    return Boolean(wardenHostel && residentHostel && wardenHostel === residentHostel);
+  }
   return false;
 }
 
 export function filterPrivateMapForRole(
   requester: UserProfile | null,
-  privateMap: Record<string, UserPrivateInfo>
+  privateMap: Record<string, UserPrivateInfo>,
+  users: UserProfile[] = []
 ): Record<string, UserPrivateInfo> {
   if (!requester) return {};
-  if (requester.role === 'management' || (requester.role === 'staff' && requester.isWarden)) {
+  if (requester.role === 'management') {
     return privateMap;
+  }
+  if (requester.role === 'staff' && requester.isWarden) {
+    const wardenHostel = getUserHostelType(requester);
+    const allowedUids = new Set(
+      users
+        .filter((u) => u.isHostel && getUserHostelType(u) === wardenHostel)
+        .map((u) => u.uid)
+    );
+    allowedUids.add(requester.uid);
+    const filtered: Record<string, UserPrivateInfo> = {};
+    for (const [uid, info] of Object.entries(privateMap)) {
+      if (allowedUids.has(uid)) {
+        filtered[uid] = info;
+      }
+    }
+    return filtered;
   }
   if (privateMap[requester.uid]) {
     return { [requester.uid]: privateMap[requester.uid] };
@@ -216,11 +245,12 @@ export async function signUpWithEmailFirebase(
   email: string,
   password: string,
   department: string,
-  requestedRole?: UserProfile['requestedRole']
+  requestedRole?: UserProfile['requestedRole'],
+  gender?: Gender
 ): Promise<UserProfile> {
   const cred = await createUserWithEmailAndPassword(auth, email, password);
   await updateProfile(cred.user, { displayName: name });
-  return ensureFirebaseUserProfile(cred.user, { name, department, requestedRole });
+  return ensureFirebaseUserProfile(cred.user, { name, department, requestedRole, gender });
 }
 
 export async function signOutFirebase(): Promise<void> {
@@ -233,6 +263,7 @@ export async function ensureFirebaseUserProfile(
     name?: string;
     department?: string;
     requestedRole?: UserProfile['requestedRole'];
+    gender?: Gender;
   }
 ): Promise<UserProfile> {
   const userRef = doc(db, 'users', fbUser.uid);
@@ -250,6 +281,7 @@ export async function ensureFirebaseUserProfile(
       uid: fbUser.uid,
       name: overrides?.name || fbUser.displayName || fbUser.email?.split('@')[0] || 'Campus User',
       role: isAdminEmail ? 'management' : 'student',
+      gender: overrides?.gender || 'Girl',
       isHostel: false,
       isWarden: false,
       department: overrides?.department || (isAdminEmail ? 'Administration' : 'Computer Science & Engineering'),
@@ -423,11 +455,27 @@ export function subscribeFirestoreState(
     );
   }
 
+  const myHostelType = getUserHostelType(currentUser);
+
   if (currentUser.isHostel || currentUser.isWarden || currentUser.role === 'management') {
-    watchCol<HostelRoom>('hostelRooms', 'hostelRooms');
+    if (currentUser.role === 'management') {
+      watchCol<HostelRoom>('hostelRooms', 'hostelRooms');
+    } else if (myHostelType) {
+      watchCol<HostelRoom>(
+        'hostelRooms',
+        'hostelRooms',
+        query(collection(db, 'hostelRooms'), where('hostelType', '==', myHostelType))
+      );
+    }
     watchCol<HostelMenu>('hostelMenus', 'hostelMenus');
-    if (currentUser.isWarden || currentUser.role === 'management') {
+    if (currentUser.role === 'management') {
       watchCol<HostelAttendanceLog>('hostelAttendanceLogs', 'hostelAttendanceLogs');
+    } else if (currentUser.isWarden && myHostelType) {
+      watchCol<HostelAttendanceLog>(
+        'hostelAttendanceLogs',
+        'hostelAttendanceLogs',
+        query(collection(db, 'hostelAttendanceLogs'), where('hostelType', '==', myHostelType))
+      );
     } else {
       watchCol<HostelAttendanceLog>(
         'hostelAttendanceLogs',
@@ -437,8 +485,8 @@ export function subscribeFirestoreState(
     }
   }
 
-  // Private PII subscription strictly scoped by role
-  if (currentUser.role === 'management' || currentUser.isWarden) {
+  // Private PII subscription strictly scoped by role & warden hostel wing
+  if (currentUser.role === 'management') {
     const unsubPriv = onSnapshot(
       collection(db, 'userPrivate'),
       (snap) => {
@@ -451,6 +499,29 @@ export function subscribeFirestoreState(
       (err) => handleFirestoreError(err, OperationType.LIST, 'userPrivate')
     );
     unsubs.push(unsubPriv);
+  } else if (currentUser.isWarden && myHostelType) {
+    const privMap: Record<string, UserPrivateInfo> = {};
+    const unsubWardenPriv = onSnapshot(
+      query(collection(db, 'userPrivate'), where('hostelType', '==', myHostelType)),
+      (snap) => {
+        snap.docs.forEach((d) => {
+          privMap[d.id] = d.data() as UserPrivateInfo;
+        });
+        onUpdate({ userPrivate: { ...privMap } });
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'userPrivate')
+    );
+    const unsubSelfPriv = onSnapshot(
+      doc(db, 'userPrivate', currentUser.uid),
+      (snap) => {
+        if (snap.exists()) {
+          privMap[currentUser.uid] = snap.data() as UserPrivateInfo;
+          onUpdate({ userPrivate: { ...privMap } });
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, `userPrivate/${currentUser.uid}`)
+    );
+    unsubs.push(unsubWardenPriv, unsubSelfPriv);
   } else {
     const unsubSelfPriv = onSnapshot(
       doc(db, 'userPrivate', currentUser.uid),
@@ -486,16 +557,61 @@ export function subscribeFirestoreState(
     loadMails();
   }
 
-  // Chat threads subscription
-  const unsubThreads = onSnapshot(
-    collection(db, 'chatThreads'),
-    (snap) => {
-      const threads = snap.docs.map((d) => d.data() as ChatThread);
-      onUpdate({ chatThreads: threads });
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'chatThreads')
-  );
-  unsubs.push(unsubThreads);
+  // Chat threads subscription (role- and hostelType-scoped queries)
+  if (currentUser.role === 'management') {
+    const unsubThreads = onSnapshot(
+      collection(db, 'chatThreads'),
+      (snap) => {
+        const threads = snap.docs.map((d) => d.data() as ChatThread);
+        onUpdate({ chatThreads: threads });
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'chatThreads')
+    );
+    unsubs.push(unsubThreads);
+  } else {
+    const mergedThreads = new Map<string, ChatThread>();
+    const emitThreads = () => onUpdate({ chatThreads: Array.from(mergedThreads.values()) });
+
+    const unsubClass = onSnapshot(
+      query(collection(db, 'chatThreads'), where('type', '==', 'class')),
+      (snap) => {
+        snap.docs.forEach((d) => mergedThreads.set(d.id, d.data() as ChatThread));
+        emitThreads();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'chatThreads')
+    );
+    unsubs.push(unsubClass);
+
+    const unsubDm = onSnapshot(
+      query(
+        collection(db, 'chatThreads'),
+        where('type', '==', 'dm'),
+        where('participantUids', 'array-contains', currentUser.uid)
+      ),
+      (snap) => {
+        snap.docs.forEach((d) => mergedThreads.set(d.id, d.data() as ChatThread));
+        emitThreads();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'chatThreads')
+    );
+    unsubs.push(unsubDm);
+
+    if ((currentUser.isHostel || currentUser.isWarden) && myHostelType) {
+      const unsubHostel = onSnapshot(
+        query(
+          collection(db, 'chatThreads'),
+          where('type', '==', 'hostel'),
+          where('hostelType', '==', myHostelType)
+        ),
+        (snap) => {
+          snap.docs.forEach((d) => mergedThreads.set(d.id, d.data() as ChatThread));
+          emitThreads();
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'chatThreads')
+      );
+      unsubs.push(unsubHostel);
+    }
+  }
 
   return () => {
     unsubs.forEach((u) => u());

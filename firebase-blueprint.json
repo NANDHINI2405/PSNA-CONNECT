@@ -8,8 +8,10 @@
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
         "role": { "type": "string", "enum": ["student", "staff", "management"] },
+        "gender": { "type": "string", "enum": ["Boy", "Girl"] },
         "isHostel": { "type": "boolean" },
         "isWarden": { "type": "boolean" },
+        "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
         "department": { "type": "string", "maxLength": 80 },
         "className": { "type": "string", "maxLength": 40 },
         "registerNumber": { "type": "string", "maxLength": 32 },
@@ -28,6 +30,7 @@
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "email": { "type": "string", "maxLength": 120 },
+        "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
         "phone": { "type": "string", "maxLength": 30 },
         "guardianName": { "type": "string", "maxLength": 100 },
         "guardianPhone": { "type": "string", "maxLength": 30 },
@@ -105,11 +108,12 @@
         "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "roomNumber": { "type": "string", "maxLength": 16 },
         "block": { "type": "string", "maxLength": 32 },
+        "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
         "floor": { "type": "string", "maxLength": 20 },
         "capacity": { "type": "number" },
         "occupantUids": { "type": "array" }
       },
-      "required": ["id", "roomNumber", "block", "capacity"]
+      "required": ["id", "roomNumber", "block", "hostelType", "capacity"]
     },
     "HostelMenu": {
       "title": "HostelMenu",
@@ -142,6 +146,7 @@
         "residentUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "residentName": { "type": "string", "maxLength": 100 },
         "roomNumber": { "type": "string", "maxLength": 16 },
+        "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
         "status": { "type": "string", "enum": ["In", "Out", "Leave"] },
         "markedByUid": { "type": "string", "maxLength": 128 }
       },
@@ -220,6 +225,7 @@
         "type": { "type": "string", "enum": ["class", "hostel", "dm"] },
         "title": { "type": "string", "maxLength": 100 },
         "className": { "type": "string", "maxLength": 40 },
+        "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
         "participantUids": { "type": "array" }
       },
       "required": ["id", "type", "title"]

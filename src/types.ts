@@ -7,6 +7,8 @@ export type EffectiveRole =
   | 'warden'
   | 'management';
 
+export type Gender = 'Boy' | 'Girl';
+export type HostelType = 'Boys Hostel' | 'Girls Hostel';
 export type HostelStatus = 'In' | 'Out' | 'Leave';
 export type Audience = 'All' | 'Students' | 'Staff' | 'Hostel';
 export type OrderStatus = 'Placed' | 'Preparing' | 'Ready' | 'Collected';
@@ -15,8 +17,10 @@ export interface UserProfile {
   uid: string;
   name: string;
   role: BaseRole;
+  gender?: Gender;
   isHostel: boolean;
   isWarden: boolean;
+  hostelType?: HostelType;
   department: string;
   className?: string;
   registerNumber?: string;
@@ -30,6 +34,7 @@ export interface UserProfile {
 export interface UserPrivateInfo {
   uid: string;
   email: string;
+  hostelType?: HostelType;
   phone?: string;
   guardianName?: string;
   guardianPhone?: string;
@@ -87,6 +92,7 @@ export interface HostelRoom {
   id: string;
   roomNumber: string;
   block: string;
+  hostelType: HostelType;
   floor: string;
   capacity: number;
   occupantUids: string[];
@@ -124,6 +130,7 @@ export interface HostelAttendanceLog {
   residentUid: string;
   residentName: string;
   roomNumber: string;
+  hostelType?: HostelType;
   status: HostelStatus;
   markedByUid: string;
 }
@@ -187,6 +194,7 @@ export interface ChatThread {
   type: 'class' | 'hostel' | 'dm';
   title: string;
   className?: string;
+  hostelType?: HostelType;
   participantUids?: string[];
 }
 
@@ -260,6 +268,53 @@ export type NavScreen =
   | 'mail'
   | 'management';
 
+export function getHostelTypeForGender(gender?: Gender): HostelType {
+  return gender === 'Girl' ? 'Girls Hostel' : 'Boys Hostel';
+}
+
+export function getRequiredGenderForHostel(hostelType: HostelType): Gender {
+  return hostelType === 'Girls Hostel' ? 'Girl' : 'Boy';
+}
+
+export function getDefaultBlockForHostel(hostelType: HostelType): string {
+  return hostelType === 'Girls Hostel' ? 'Mullai Girls Hostel' : 'Kurinji Boys Hostel';
+}
+
+export function getUserHostelType(user: UserProfile | null | undefined): HostelType | null {
+  if (!user) return null;
+  if (user.hostelType === 'Boys Hostel' || user.hostelType === 'Girls Hostel') {
+    return user.hostelType;
+  }
+  if (user.isHostel || user.isWarden) {
+    if (user.gender === 'Girl') return 'Girls Hostel';
+    if (user.gender === 'Boy') return 'Boys Hostel';
+    const blk = (user.block || '').toLowerCase();
+    if (blk.includes('mullai') || blk.includes('girl')) return 'Girls Hostel';
+    if (blk.includes('kurinji') || blk.includes('boy')) return 'Boys Hostel';
+    return 'Boys Hostel';
+  }
+  return null;
+}
+
+export function getUserGender(user: UserProfile | null | undefined): Gender {
+  if (!user) return 'Boy';
+  if (user.gender === 'Girl' || user.gender === 'Boy') return user.gender;
+  if (user.hostelType === 'Girls Hostel') return 'Girl';
+  const blk = (user.block || '').toLowerCase();
+  if (blk.includes('mullai') || blk.includes('girl')) return 'Girl';
+  return 'Boy';
+}
+
+export function canUserAccessHostelType(
+  user: UserProfile | null | undefined,
+  hostelType: HostelType
+): boolean {
+  if (!user) return false;
+  if (user.role === 'management') return true;
+  if (!user.isHostel && !user.isWarden) return false;
+  return getUserHostelType(user) === hostelType;
+}
+
 export function getEffectiveRole(user: UserProfile | null): EffectiveRole {
   if (!user) return 'student';
   if (user.role === 'management') return 'management';
@@ -269,15 +324,16 @@ export function getEffectiveRole(user: UserProfile | null): EffectiveRole {
 
 export function getRoleLabel(user: UserProfile | null): string {
   const effective = getEffectiveRole(user);
+  const hostelType = getUserHostelType(user);
   switch (effective) {
     case 'management':
       return 'Management';
     case 'warden':
-      return 'Warden';
+      return hostelType ? `${hostelType} Warden` : 'Warden';
     case 'staff':
       return 'Faculty / Staff';
     case 'hostel_resident':
-      return 'Hostel Resident';
+      return hostelType ? `${hostelType} Resident` : 'Hostel Resident';
     case 'student':
       return 'Day Scholar Student';
   }
@@ -295,6 +351,6 @@ export function getAllowedScreens(user: UserProfile | null): NavScreen[] {
     case 'warden':
       return ['dashboard', 'attendance', 'hostel', 'canteen', 'notices', 'chat', 'documents', 'mail'];
     case 'management':
-      return ['dashboard', 'management', 'canteen', 'notices', 'chat', 'documents', 'mail'];
+      return ['dashboard', 'management', 'hostel', 'canteen', 'notices', 'chat', 'documents', 'mail'];
   }
 }

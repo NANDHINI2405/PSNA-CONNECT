@@ -12,6 +12,19 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidGender(g) {
+      return g in ['Boy', 'Girl'];
+    }
+
+    function isValidHostelType(h) {
+      return h in ['Boys Hostel', 'Girls Hostel'];
+    }
+
+    function matchesGenderAndHostel(gender, hostelType) {
+      return (gender == 'Girl' && hostelType == 'Girls Hostel')
+        || (gender == 'Boy' && hostelType == 'Boys Hostel');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -56,19 +69,42 @@ service cloud.firestore {
       return isManagement() || (hasUserProfile() && currentUserRole().role == 'staff' && currentUserRole().isWarden == true);
     }
 
+    function isWingWardenOnly() {
+      return hasUserProfile()
+        && currentUserRole().role == 'staff'
+        && currentUserRole().isWarden == true
+        && ('hostelType' in currentUserRole())
+        && isValidHostelType(currentUserRole().hostelType);
+    }
+
+    function callerHostelType() {
+      return currentUserRole().hostelType;
+    }
+
     function isHostelResident() {
       return isWarden() || isManagement() || (hasUserProfile() && currentUserRole().isHostel == true);
+    }
+
+    function canAccessHostelWing(targetHostelType) {
+      return isManagement()
+        || (hasUserProfile()
+          && (currentUserRole().isHostel == true || (currentUserRole().role == 'staff' && currentUserRole().isWarden == true))
+          && ('hostelType' in currentUserRole())
+          && currentUserRole().hostelType == targetHostelType);
     }
 
     // --- Entity Validation Helpers ---
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'name', 'role', 'isHostel', 'isWarden', 'department'])
-        && data.keys().hasOnly(['uid', 'name', 'role', 'isHostel', 'isWarden', 'department', 'className', 'registerNumber', 'roomNumber', 'block', 'hostelStatus', 'requestedRole', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'name', 'role', 'gender', 'isHostel', 'isWarden', 'hostelType', 'department', 'className', 'registerNumber', 'roomNumber', 'block', 'hostelStatus', 'requestedRole', 'createdAt'])
         && isValidId(data.uid)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
         && data.role in ['student', 'staff', 'management']
+        && (!('gender' in data) || isValidGender(data.gender))
         && data.isHostel is bool
         && data.isWarden is bool
+        && (!('hostelType' in data) || isValidHostelType(data.hostelType))
+        && ((!data.isHostel && !data.isWarden) || !('gender' in data) || !('hostelType' in data) || matchesGenderAndHostel(data.gender, data.hostelType))
         && data.department is string && data.department.size() <= 80
         && (!('className' in data) || (data.className is string && data.className.size() <= 40))
         && (!('registerNumber' in data) || (data.registerNumber is string && data.registerNumber.size() <= 32))
@@ -81,9 +117,10 @@ service cloud.firestore {
 
     function isValidUserPrivate(data) {
       return data.keys().hasAll(['uid', 'email'])
-        && data.keys().hasOnly(['uid', 'email', 'phone', 'guardianName', 'guardianPhone', 'address', 'bloodGroup', 'medicalNotes', 'allergies', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'hostelType', 'phone', 'guardianName', 'guardianPhone', 'address', 'bloodGroup', 'medicalNotes', 'allergies', 'updatedAt'])
         && isValidId(data.uid)
         && data.email is string && data.email.size() <= 120
+        && (!('hostelType' in data) || isValidHostelType(data.hostelType))
         && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
         && (!('guardianName' in data) || (data.guardianName is string && data.guardianName.size() <= 100))
         && (!('guardianPhone' in data) || (data.guardianPhone is string && data.guardianPhone.size() <= 30))
@@ -144,11 +181,12 @@ service cloud.firestore {
     }
 
     function isValidHostelRoom(data) {
-      return data.keys().hasAll(['id', 'roomNumber', 'block', 'capacity'])
-        && data.keys().hasOnly(['id', 'roomNumber', 'block', 'floor', 'capacity', 'occupantUids'])
+      return data.keys().hasAll(['id', 'roomNumber', 'block', 'hostelType', 'capacity'])
+        && data.keys().hasOnly(['id', 'roomNumber', 'block', 'hostelType', 'floor', 'capacity', 'occupantUids'])
         && isValidId(data.id)
         && data.roomNumber is string && data.roomNumber.size() <= 16
         && data.block is string && data.block.size() <= 32
+        && isValidHostelType(data.hostelType)
         && data.capacity is number && data.capacity >= 1 && data.capacity <= 6
         && (!('floor' in data) || (data.floor is string && data.floor.size() <= 20))
         && (!('occupantUids' in data) || (data.occupantUids is list && data.occupantUids.size() <= 6 && (data.occupantUids.size() == 0 || data.occupantUids[0] is string)));
@@ -175,10 +213,11 @@ service cloud.firestore {
 
     function isValidHostelAttendanceLog(data) {
       return data.keys().hasAll(['id', 'date', 'residentUid', 'status'])
-        && data.keys().hasOnly(['id', 'date', 'residentUid', 'residentName', 'roomNumber', 'status', 'markedByUid'])
+        && data.keys().hasOnly(['id', 'date', 'residentUid', 'residentName', 'roomNumber', 'hostelType', 'status', 'markedByUid'])
         && isValidId(data.id)
         && isValidId(data.residentUid)
         && data.date is string && data.date.size() <= 20
+        && (!('hostelType' in data) || isValidHostelType(data.hostelType))
         && data.status in ['In', 'Out', 'Leave']
         && (!('residentName' in data) || (data.residentName is string && data.residentName.size() <= 100))
         && (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 16))
@@ -242,11 +281,13 @@ service cloud.firestore {
 
     function isValidChatThread(data) {
       return data.keys().hasAll(['id', 'type', 'title'])
-        && data.keys().hasOnly(['id', 'type', 'title', 'className', 'participantUids'])
+        && data.keys().hasOnly(['id', 'type', 'title', 'className', 'hostelType', 'participantUids'])
         && isValidId(data.id)
         && data.type in ['class', 'hostel', 'dm']
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 100
         && (!('className' in data) || (data.className is string && data.className.size() <= 40))
+        && (!('hostelType' in data) || isValidHostelType(data.hostelType))
+        && (data.type != 'hostel' || ('hostelType' in data && isValidHostelType(data.hostelType)))
         && (!('participantUids' in data) || (data.participantUids is list && data.participantUids.size() <= 10 && (data.participantUids.size() == 0 || data.participantUids[0] is string)));
     }
 
@@ -322,24 +363,55 @@ service cloud.firestore {
       );
       allow update: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming()) && (
         isManagement() ||
-        (isWarden() && existing().isHostel == true && incoming().diff(existing()).affectedKeys().hasOnly(['roomNumber', 'block', 'hostelStatus']) && incoming().role == existing().role && incoming().isHostel == existing().isHostel && incoming().isWarden == existing().isWarden) ||
+        (isWingWardenOnly()
+          && existing().isHostel == true
+          && ('hostelType' in existing())
+          && existing().hostelType == callerHostelType()
+          && incoming().diff(existing()).affectedKeys().hasOnly(['roomNumber', 'block', 'hostelStatus'])
+          && incoming().role == existing().role
+          && incoming().isHostel == existing().isHostel
+          && incoming().isWarden == existing().isWarden
+          && incoming().hostelType == existing().hostelType) ||
         (isOwner(userId) && existing().isHostel == true && incoming().diff(existing()).affectedKeys().hasOnly(['hostelStatus']) && incoming().uid == existing().uid && incoming().role == existing().role && incoming().isHostel == existing().isHostel && incoming().isWarden == existing().isWarden)
       );
       allow delete: if isValidId(userId) && isManagement();
     }
 
-    // 2. Private PII & Hostel Medical Details (Strictly Owner / Warden / Management)
+    // 2. Private PII & Hostel Medical Details (Strictly Owner / Same-Wing Warden / Management)
     match /userPrivate/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isWarden() || isManagement());
-      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isWarden() || isManagement());
+      allow get: if isValidId(userId) && (
+        isOwner(userId) ||
+        isManagement() ||
+        (isWingWardenOnly()
+          && exists(userDocPath(userId))
+          && get(userDocPath(userId)).data.isHostel == true
+          && ('hostelType' in get(userDocPath(userId)).data)
+          && get(userDocPath(userId)).data.hostelType == callerHostelType())
+      );
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid ||
+        isManagement() ||
+        (isWingWardenOnly() && ('hostelType' in resource.data) && resource.data.hostelType == callerHostelType())
+      );
       allow create: if isValidId(userId) && isSignedIn() && isValidUserPrivate(incoming()) && (
         isManagement() ||
-        isWarden() ||
+        (isWingWardenOnly()
+          && exists(userDocPath(userId))
+          && get(userDocPath(userId)).data.isHostel == true
+          && ('hostelType' in get(userDocPath(userId)).data)
+          && get(userDocPath(userId)).data.hostelType == callerHostelType()
+          && (!('hostelType' in incoming()) || incoming().hostelType == callerHostelType())) ||
         (isOwner(userId) && incoming().uid == request.auth.uid)
       );
       allow update: if isValidId(userId) && isSignedIn() && isValidUserPrivate(incoming()) && (
         isManagement() ||
-        (isWarden() && incoming().uid == existing().uid) ||
+        (isWingWardenOnly()
+          && incoming().uid == existing().uid
+          && exists(userDocPath(userId))
+          && get(userDocPath(userId)).data.isHostel == true
+          && ('hostelType' in get(userDocPath(userId)).data)
+          && get(userDocPath(userId)).data.hostelType == callerHostelType()
+          && (!('hostelType' in incoming()) || incoming().hostelType == callerHostelType())) ||
         (isOwner(userId) && incoming().uid == existing().uid && incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'guardianName', 'guardianPhone', 'address', 'updatedAt']))
       );
       allow delete: if isValidId(userId) && isManagement();
@@ -382,12 +454,16 @@ service cloud.firestore {
       allow delete: if isValidId(checkinId) && isManagement();
     }
 
-    // 6. Hostel Rooms
+    // 6. Hostel Rooms (Strictly Wing-Scoped: Boys Hostel vs Girls Hostel)
     match /hostelRooms/{roomId} {
-      allow get: if isValidId(roomId) && isHostelResident();
-      allow list: if isHostelResident() && resource.data.roomNumber is string;
-      allow create: if isValidId(roomId) && (isWarden() || isManagement()) && isValidHostelRoom(incoming());
-      allow update: if isValidId(roomId) && (isWarden() || isManagement()) && isValidHostelRoom(incoming());
+      allow get: if isValidId(roomId) && canAccessHostelWing(existing().hostelType);
+      allow list: if isSignedIn() && resource.data.roomNumber is string && canAccessHostelWing(resource.data.hostelType);
+      allow create: if isValidId(roomId) && isValidHostelRoom(incoming()) && (
+        isManagement() || (isWingWardenOnly() && incoming().hostelType == callerHostelType())
+      );
+      allow update: if isValidId(roomId) && isValidHostelRoom(incoming()) && (
+        isManagement() || (isWingWardenOnly() && existing().hostelType == callerHostelType() && incoming().hostelType == existing().hostelType)
+      );
       allow delete: if isValidId(roomId) && isManagement();
     }
 
@@ -400,12 +476,36 @@ service cloud.firestore {
       allow delete: if isValidId(dayId) && isManagement();
     }
 
-    // 8. Hostel Attendance Logs
+    // 8. Hostel Attendance Logs (Strictly Wing-Scoped for Wardens)
     match /hostelAttendanceLogs/{logId} {
-      allow get: if isValidId(logId) && (isWarden() || isManagement() || (isSignedIn() && existing().residentUid == request.auth.uid));
-      allow list: if isSignedIn() && (resource.data.residentUid == request.auth.uid || isWarden() || isManagement());
-      allow create: if isValidId(logId) && (isWarden() || isManagement()) && isValidHostelAttendanceLog(incoming());
-      allow update: if isValidId(logId) && (isWarden() || isManagement()) && isValidHostelAttendanceLog(incoming()) && incoming().residentUid == existing().residentUid;
+      allow get: if isValidId(logId) && (
+        isManagement() ||
+        (isSignedIn() && existing().residentUid == request.auth.uid) ||
+        (isWingWardenOnly() && ('hostelType' in existing()) && existing().hostelType == callerHostelType())
+      );
+      allow list: if isSignedIn() && (
+        resource.data.residentUid == request.auth.uid ||
+        isManagement() ||
+        (isWingWardenOnly() && ('hostelType' in resource.data) && resource.data.hostelType == callerHostelType())
+      );
+      allow create: if isValidId(logId) && isValidHostelAttendanceLog(incoming()) && (
+        isManagement() ||
+        (isWingWardenOnly()
+          && ('hostelType' in incoming())
+          && incoming().hostelType == callerHostelType()
+          && exists(userDocPath(incoming().residentUid))
+          && get(userDocPath(incoming().residentUid)).data.isHostel == true
+          && ('hostelType' in get(userDocPath(incoming().residentUid)).data)
+          && get(userDocPath(incoming().residentUid)).data.hostelType == callerHostelType())
+      );
+      allow update: if isValidId(logId) && isValidHostelAttendanceLog(incoming()) && incoming().residentUid == existing().residentUid && (
+        isManagement() ||
+        (isWingWardenOnly()
+          && ('hostelType' in existing())
+          && existing().hostelType == callerHostelType()
+          && ('hostelType' in incoming())
+          && incoming().hostelType == callerHostelType())
+      );
       allow delete: if isValidId(logId) && isManagement();
     }
 
@@ -453,40 +553,59 @@ service cloud.firestore {
       allow delete: if isValidId(eventId) && isManagement();
     }
 
-    // 13. Chat Threads & Messages (Master Gate Pattern)
+    // 13. Chat Threads & Messages (Master Gate Pattern + Boys/Girls Hostel Isolation)
     match /chatThreads/{threadId} {
       allow get: if isValidId(threadId) && isSignedIn() && (
-        existing().type != 'hostel' || isHostelResident()
+        existing().type != 'hostel' || (('hostelType' in existing()) && canAccessHostelWing(existing().hostelType))
       ) && (
         existing().type != 'dm' || request.auth.uid in existing().participantUids || isManagement()
       );
       allow list: if isSignedIn() && (
         resource.data.type == 'class' ||
-        (resource.data.type == 'hostel' && isHostelResident()) ||
+        (resource.data.type == 'hostel' && ('hostelType' in resource.data) && canAccessHostelWing(resource.data.hostelType)) ||
         (resource.data.type == 'dm' && (request.auth.uid in resource.data.participantUids || isManagement()))
       );
       allow create: if isValidId(threadId) && isSignedIn() && isValidChatThread(incoming()) && (
-        isManagement() || isStaff() || (incoming().type == 'dm' && request.auth.uid in incoming().participantUids)
+        isManagement() ||
+        (isStaff() && incoming().type == 'class') ||
+        (isWingWardenOnly() && incoming().type == 'hostel' && incoming().hostelType == callerHostelType()) ||
+        (incoming().type == 'dm' && request.auth.uid in incoming().participantUids)
       );
       allow update: if isValidId(threadId) && isManagement() && isValidChatThread(incoming());
       allow delete: if isValidId(threadId) && isManagement();
 
       match /messages/{messageId} {
-        allow get: if isValidId(threadId) && isValidId(messageId) && isSignedIn() && exists(/databases/$(database)/documents/chatThreads/$(threadId));
+        allow get: if isValidId(threadId) && isValidId(messageId) && isSignedIn()
+          && exists(/databases/$(database)/documents/chatThreads/$(threadId))
+          && (
+            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'class' ||
+            (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'hostel'
+              && ('hostelType' in get(/databases/$(database)/documents/chatThreads/$(threadId)).data)
+              && canAccessHostelWing(get(/databases/$(database)/documents/chatThreads/$(threadId)).data.hostelType)) ||
+            (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'dm'
+              && (request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids || isManagement()))
+          );
         allow list: if isSignedIn() && exists(/databases/$(database)/documents/chatThreads/$(threadId)) && (
           get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'class' ||
-          (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'hostel' && isHostelResident()) ||
-          (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'dm' && (request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids || isManagement()))
+          (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'hostel'
+            && ('hostelType' in get(/databases/$(database)/documents/chatThreads/$(threadId)).data)
+            && canAccessHostelWing(get(/databases/$(database)/documents/chatThreads/$(threadId)).data.hostelType)) ||
+          (get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type == 'dm'
+            && (request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids || isManagement()))
         );
         allow create: if isValidId(threadId) && isValidId(messageId) && isSignedIn() && isValidChatMessage(incoming())
           && exists(/databases/$(database)/documents/chatThreads/$(threadId))
           && incoming().threadId == threadId
           && (isManagement() || incoming().senderUid == request.auth.uid)
           && (
-            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type != 'hostel' || isHostelResident()
+            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type != 'hostel'
+            || (('hostelType' in get(/databases/$(database)/documents/chatThreads/$(threadId)).data)
+              && canAccessHostelWing(get(/databases/$(database)/documents/chatThreads/$(threadId)).data.hostelType))
           )
           && (
-            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type != 'dm' || request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids || isManagement()
+            get(/databases/$(database)/documents/chatThreads/$(threadId)).data.type != 'dm'
+            || request.auth.uid in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantUids
+            || isManagement()
           );
         allow update, delete: if isValidId(threadId) && isValidId(messageId) && isManagement();
       }

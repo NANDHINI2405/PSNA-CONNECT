@@ -13,7 +13,15 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getTodayDayName, getTodayIso } from '../services/dataService';
-import { DayOfWeek, HostelMenu, HostelStatus } from '../types';
+import {
+  DayOfWeek,
+  HostelMenu,
+  HostelStatus,
+  HostelType,
+  getDefaultBlockForHostel,
+  getUserGender,
+  getUserHostelType,
+} from '../types';
 
 const DAYS: DayOfWeek[] = [
   'Monday',
@@ -63,23 +71,39 @@ function ResidentHostelView() {
 
   if (!currentUser) return null;
 
-  const myRoom = state.hostelRooms.find(
+  const myHostelType: HostelType =
+    getUserHostelType(currentUser) ||
+    (getUserGender(currentUser) === 'Girl' ? 'Girls Hostel' : 'Boys Hostel');
+
+  const wingRooms = useMemo(
+    () => state.hostelRooms.filter((r) => r.hostelType === myHostelType),
+    [state.hostelRooms, myHostelType]
+  );
+
+  const myWarden = useMemo(
+    () => state.users.find((u) => u.isWarden && getUserHostelType(u) === myHostelType),
+    [state.users, myHostelType]
+  );
+
+  const myRoom = wingRooms.find(
     (r) =>
       r.occupantUids.includes(currentUser.uid) ||
       (currentUser.roomNumber && r.roomNumber === currentUser.roomNumber)
   );
 
-  // Roommates: ONLY name and className (strict privacy rule!)
+  // Roommates: ONLY name and className from same hostel wing (strict privacy rule!)
   const roommates = useMemo(() => {
     if (!myRoom) return [];
     return state.users.filter(
       (u) =>
         u.uid !== currentUser.uid &&
+        u.isHostel &&
+        getUserHostelType(u) === myHostelType &&
         (myRoom.occupantUids.includes(u.uid) || u.roomNumber === myRoom.roomNumber)
     );
-  }, [myRoom, state.users, currentUser.uid]);
+  }, [myRoom, state.users, currentUser.uid, myHostelType]);
 
-  const vacantRooms = state.hostelRooms.filter((r) => r.occupantUids.length < r.capacity);
+  const vacantRooms = wingRooms.filter((r) => r.occupantUids.length < r.capacity);
   const selectedMenu = state.hostelMenus.find((m) => m.day === selectedDay) || state.hostelMenus[0];
   const todayMenu = state.hostelMenus.find((m) => m.day === todayDay);
 
@@ -128,13 +152,20 @@ function ResidentHostelView() {
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <div className="text-xs font-medium text-blue-700">My Hostel Allotment</div>
+              <div className="text-xs font-medium text-blue-700">
+                {myHostelType} · {myHostelType === 'Girls Hostel' ? 'Girls Only' : 'Boys Only'}
+              </div>
               <h2 className="text-xl font-semibold text-slate-900 mt-0.5">
                 Room {myRoom?.roomNumber || currentUser.roomNumber || 'Unassigned'} ·{' '}
-                {myRoom?.block || currentUser.block || 'Hostel'}
+                {myRoom?.block || currentUser.block || getDefaultBlockForHostel(myHostelType)}
               </h2>
               <p className="text-sm text-slate-600 mt-0.5">
                 {currentUser.className || 'Student'} · {currentUser.department}
+                {myWarden
+                  ? ` · Warden: ${myWarden.name} (${
+                      myHostelType === 'Girls Hostel' ? 'Female Warden' : 'Male Warden'
+                    })`
+                  : ''}
               </p>
             </div>
             <button
@@ -143,7 +174,7 @@ function ResidentHostelView() {
               className="min-h-[42px] px-4 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-medium inline-flex items-center gap-2 self-start"
             >
               <MessageSquare className="w-4 h-4" />
-              <span>Open Hostel Chat</span>
+              <span>Open {myHostelType} Chat</span>
             </button>
           </div>
 
@@ -171,10 +202,10 @@ function ResidentHostelView() {
 
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2.5">
-                Vacant Hostel Rooms
+                Vacant {myHostelType} Rooms
               </h3>
               {vacantRooms.length === 0 ? (
-                <p className="text-sm text-slate-500">All rooms are currently full.</p>
+                <p className="text-sm text-slate-500">All {myHostelType} rooms are currently full.</p>
               ) : (
                 <ul className="space-y-2">
                   {vacantRooms.map((vr) => (
@@ -348,6 +379,7 @@ function ResidentHostelView() {
 
 function WardenHostelConsole() {
   const {
+    currentUser,
     state,
     getPrivateForUser,
     updateHostelMenu,
@@ -356,6 +388,13 @@ function WardenHostelConsole() {
     createHostelRoom,
     updateUserPrivateInfo,
   } = useApp();
+
+  const isManagement = currentUser?.role === 'management';
+  const wardenHostelType: HostelType | null =
+    currentUser?.isWarden && !isManagement ? getUserHostelType(currentUser) || 'Boys Hostel' : null;
+
+  const [wingFilter, setWingFilter] = useState<'All' | HostelType>(wardenHostelType || 'All');
+  const activeWingFilter: 'All' | HostelType = wardenHostelType || wingFilter;
 
   const [tab, setTab] = useState<'residents' | 'rooms' | 'menu' | 'attendance'>('residents');
   const [search, setSearch] = useState('');
@@ -377,12 +416,39 @@ function WardenHostelConsole() {
   const [privMedicalNotes, setPrivMedicalNotes] = useState('');
 
   // Add Hostel Room state
+  const [newRoomHostelType, setNewRoomHostelType] = useState<HostelType>(
+    wardenHostelType || 'Boys Hostel'
+  );
   const [roomNumber, setRoomNumber] = useState('');
-  const [roomBlock, setRoomBlock] = useState('Kurinji Hostel');
+  const [roomBlock, setRoomBlock] = useState(
+    getDefaultBlockForHostel(wardenHostelType || 'Boys Hostel')
+  );
   const [roomFloor, setRoomFloor] = useState('2nd Floor');
   const [roomCapacity, setRoomCapacity] = useState('2');
 
-  const residents = useMemo(() => state.users.filter((u) => u.isHostel), [state.users]);
+  const effectiveRoomHostelType: HostelType = wardenHostelType || newRoomHostelType;
+
+  const residents = useMemo(() => {
+    return state.users.filter((u) => {
+      if (!u.isHostel) return false;
+      if (activeWingFilter === 'All') return true;
+      return getUserHostelType(u) === activeWingFilter;
+    });
+  }, [state.users, activeWingFilter]);
+
+  const visibleRooms = useMemo(() => {
+    if (activeWingFilter === 'All') return state.hostelRooms;
+    return state.hostelRooms.filter((r) => r.hostelType === activeWingFilter);
+  }, [state.hostelRooms, activeWingFilter]);
+
+  const boysWarden = useMemo(
+    () => state.users.find((u) => u.isWarden && getUserHostelType(u) === 'Boys Hostel'),
+    [state.users]
+  );
+  const girlsWarden = useMemo(
+    () => state.users.find((u) => u.isWarden && getUserHostelType(u) === 'Girls Hostel'),
+    [state.users]
+  );
 
   const filteredResidents = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -392,6 +458,7 @@ function WardenHostelConsole() {
         r.name.toLowerCase().includes(q) ||
         (r.className || '').toLowerCase().includes(q) ||
         (r.roomNumber || '').toLowerCase().includes(q) ||
+        (getUserHostelType(r) || '').toLowerCase().includes(q) ||
         r.department.toLowerCase().includes(q)
     );
   }, [residents, search]);
@@ -402,9 +469,11 @@ function WardenHostelConsole() {
 
   const selectedRoommates = useMemo(() => {
     if (!selectedResident) return [];
+    const resHostel = getUserHostelType(selectedResident);
     return residents.filter(
       (r) =>
         r.uid !== selectedResident.uid &&
+        getUserHostelType(r) === resHostel &&
         r.roomNumber &&
         r.roomNumber === selectedResident.roomNumber
     );
@@ -459,7 +528,7 @@ function WardenHostelConsole() {
       );
       setFeedback({
         type: 'success',
-        message: `Saved daily hostel attendance for ${getTodayIso()} (${totals.inCount} In, ${totals.outCount} Out, ${totals.leaveCount} Leave).`,
+        message: `Saved daily ${activeWingFilter === 'All' ? '' : `${activeWingFilter} `}attendance for ${getTodayIso()} (${totals.inCount} In, ${totals.outCount} Out, ${totals.leaveCount} Leave).`,
       });
     } catch (err) {
       setFeedback({
@@ -528,13 +597,14 @@ function WardenHostelConsole() {
       const created = await createHostelRoom({
         roomNumber,
         block: roomBlock,
+        hostelType: effectiveRoomHostelType,
         floor: roomFloor,
         capacity: Number(roomCapacity) || 2,
       });
       setRoomNumber('');
       setFeedback({
         type: 'success',
-        message: `Added Room ${created.roomNumber} (${created.block}).`,
+        message: `Added ${created.hostelType} Room ${created.roomNumber} (${created.block}).`,
       });
     } catch (err) {
       setFeedback({
@@ -546,41 +616,90 @@ function WardenHostelConsole() {
 
   return (
     <div className="space-y-6">
-      <section className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-        <div>
-          <div className="text-xs font-medium text-blue-700">Warden Administration</div>
-          <h2 className="text-xl font-semibold text-slate-900 mt-0.5">
-            Hostel Operations & Resident Records
-          </h2>
-          <p className="text-sm text-slate-600 mt-0.5 tabular-nums">
-            {residents.length} Residents · {state.hostelRooms.length} Rooms ·{' '}
-            {totals.inCount} In / {totals.outCount} Out / {totals.leaveCount} Leave
-          </p>
+      <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div className="text-xs font-medium text-blue-700">
+              {wardenHostelType
+                ? `${wardenHostelType} Administration · ${
+                    wardenHostelType === 'Girls Hostel' ? 'Female Warden (Girls Only)' : 'Male Warden (Boys Only)'
+                  }`
+                : 'Management Hostel Administration · Boys & Girls Hostels'}
+            </div>
+            <h2 className="text-xl font-semibold text-slate-900 mt-0.5">
+              {wardenHostelType ? `${wardenHostelType} Operations & Resident Records` : 'Hostel Operations & Resident Records'}
+            </h2>
+            <p className="text-sm text-slate-600 mt-0.5 tabular-nums">
+              {residents.length} Residents · {visibleRooms.length} Rooms ·{' '}
+              {totals.inCount} In / {totals.outCount} Out / {totals.leaveCount} Leave
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-1 p-1 bg-slate-100 rounded-xl self-start lg:self-auto">
+            {(
+              [
+                { id: 'residents', label: 'Residents & Medical' },
+                { id: 'rooms', label: 'Rooms & Allotment' },
+                { id: 'menu', label: 'Menu Editor' },
+                { id: 'attendance', label: 'Daily Attendance' },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => {
+                  setTab(t.id);
+                  setFeedback(null);
+                }}
+                className={`min-h-[40px] px-3.5 py-1.5 text-xs sm:text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  tab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-1 p-1 bg-slate-100 rounded-xl self-start lg:self-auto">
-          {(
-            [
-              { id: 'residents', label: 'Residents & Medical' },
-              { id: 'rooms', label: 'Rooms & Allotment' },
-              { id: 'menu', label: 'Menu Editor' },
-              { id: 'attendance', label: 'Daily Attendance' },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                setTab(t.id);
-                setFeedback(null);
-              }}
-              className={`min-h-[40px] px-3.5 py-1.5 text-xs sm:text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                tab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        {/* Hostel Wing Scope Bar */}
+        <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+            {(!wardenHostelType || wardenHostelType === 'Boys Hostel') && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 text-blue-900 font-medium">
+                Boys Hostel (Boys Only) · Male Warden: {boysWarden?.name || 'Unassigned'}
+              </span>
+            )}
+            {(!wardenHostelType || wardenHostelType === 'Girls Hostel') && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-900 font-medium">
+                Girls Hostel (Girls Only) · Female Warden: {girlsWarden?.name || 'Unassigned'}
+              </span>
+            )}
+          </div>
+
+          {isManagement && (
+            <div className="flex gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
+              {(['All', 'Boys Hostel', 'Girls Hostel'] as const).map((wing) => (
+                <button
+                  key={wing}
+                  type="button"
+                  onClick={() => {
+                    setWingFilter(wing);
+                    if (wing !== 'All') {
+                      setNewRoomHostelType(wing);
+                      setRoomBlock(getDefaultBlockForHostel(wing));
+                    }
+                  }}
+                  className={`min-h-[34px] px-3 py-1 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+                    wingFilter === wing
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {wing === 'All' ? 'All Hostels' : wing}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -637,7 +756,7 @@ function WardenHostelConsole() {
                       <div className="min-w-0">
                         <div className="text-sm font-semibold truncate">{res.name}</div>
                         <div className="text-xs text-slate-500 truncate">
-                          Room {res.roomNumber || '-'} · {res.className || res.department}
+                          {getUserHostelType(res) || 'Hostel'} · Room {res.roomNumber || '-'} · {res.className || res.department}
                         </div>
                       </div>
                       <span className="text-xs font-medium text-slate-600 shrink-0">
@@ -658,7 +777,7 @@ function WardenHostelConsole() {
                 <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 pb-4 border-b border-slate-100">
                   <div>
                     <div className="text-xs font-medium text-blue-700">
-                      Room {selectedResident.roomNumber || 'Unassigned'} · {selectedResident.block || 'Hostel'}
+                      {getUserHostelType(selectedResident) || 'Hostel'} ({getUserGender(selectedResident)}) · Room {selectedResident.roomNumber || 'Unassigned'} · {selectedResident.block || 'Hostel'}
                     </div>
                     <h3 className="text-xl font-semibold text-slate-900 mt-0.5">
                       {selectedResident.name}
@@ -870,9 +989,32 @@ function WardenHostelConsole() {
           >
             <div className="flex items-center gap-2">
               <Plus className="w-4 h-4 text-blue-600" />
-              <h3 className="text-base font-semibold text-slate-900">Add New Hostel Room</h3>
+              <h3 className="text-base font-semibold text-slate-900">
+                Add New {wardenHostelType || ''} Room
+              </h3>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Hostel Wing</label>
+                {wardenHostelType ? (
+                  <div className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs font-medium text-slate-800 flex items-center">
+                    {wardenHostelType}
+                  </div>
+                ) : (
+                  <select
+                    value={newRoomHostelType}
+                    onChange={(e) => {
+                      const next = e.target.value as HostelType;
+                      setNewRoomHostelType(next);
+                      setRoomBlock(getDefaultBlockForHostel(next));
+                    }}
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800"
+                  >
+                    <option value="Boys Hostel">Boys Hostel (Boys Only)</option>
+                    <option value="Girls Hostel">Girls Hostel (Girls Only)</option>
+                  </select>
+                )}
+              </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Room No.</label>
                 <input
@@ -880,7 +1022,7 @@ function WardenHostelConsole() {
                   required
                   value={roomNumber}
                   onChange={(e) => setRoomNumber(e.target.value)}
-                  placeholder="e.g. K-204"
+                  placeholder={effectiveRoomHostelType === 'Girls Hostel' ? 'e.g. M-106' : 'e.g. K-204'}
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-mono"
                 />
               </div>
@@ -891,7 +1033,7 @@ function WardenHostelConsole() {
                   required
                   value={roomBlock}
                   onChange={(e) => setRoomBlock(e.target.value)}
-                  placeholder="Kurinji Hostel"
+                  placeholder={getDefaultBlockForHostel(effectiveRoomHostelType)}
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm"
                 />
               </div>
@@ -933,12 +1075,14 @@ function WardenHostelConsole() {
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold text-slate-900">Room Occupancy</h3>
                 <span className="text-xs text-slate-500 tabular-nums">
-                  {state.hostelRooms.filter((r) => r.occupantUids.length < r.capacity).length} rooms with vacancies
+                  {visibleRooms.filter((r) => r.occupantUids.length < r.capacity).length} rooms with vacancies
                 </span>
               </div>
               <div className="divide-y divide-slate-100">
-                {state.hostelRooms.map((room) => {
-                  const occupants = residents.filter((r) => room.occupantUids.includes(r.uid));
+                {visibleRooms.map((room) => {
+                  const occupants = state.users.filter(
+                    (r) => r.isHostel && room.occupantUids.includes(r.uid)
+                  );
                   const vacant = room.capacity - occupants.length;
                   return (
                     <div key={room.id} className="py-3.5 first:pt-0 last:pb-0">
@@ -947,6 +1091,9 @@ function WardenHostelConsole() {
                           <BedDouble className="w-4 h-4 text-blue-600" />
                           <span className="text-sm font-semibold text-slate-900">
                             {room.roomNumber} · {room.block}
+                          </span>
+                          <span className="text-[11px] font-medium text-blue-700">
+                            ({room.hostelType})
                           </span>
                         </div>
                         <span
@@ -971,11 +1118,13 @@ function WardenHostelConsole() {
           <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
             <h3 className="text-base font-semibold text-slate-900">Change Room Allotment</h3>
             <p className="text-sm text-slate-600">
-              Reassign any hostel resident to an available room below.
+              Girls Hostel rooms accept Girl residents only; Boys Hostel rooms accept Boy residents only.
             </p>
             <div className="divide-y divide-slate-100">
               {residents.map((res) => {
-                const currentRoom = state.hostelRooms.find((r) =>
+                const resHostel = getUserHostelType(res) || 'Boys Hostel';
+                const eligibleRooms = visibleRooms.filter((rm) => rm.hostelType === resHostel);
+                const currentRoom = eligibleRooms.find((r) =>
                   r.occupantUids.includes(res.uid)
                 );
                 return (
@@ -984,7 +1133,10 @@ function WardenHostelConsole() {
                     className="py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
                   >
                     <div>
-                      <div className="text-sm font-medium text-slate-900">{res.name}</div>
+                      <div className="text-sm font-medium text-slate-900">
+                        {res.name}{' '}
+                        <span className="text-xs font-normal text-blue-700">({resHostel})</span>
+                      </div>
                       <div className="text-xs text-slate-500">
                         Current: {res.roomNumber || 'Unassigned'} · {res.className}
                       </div>
@@ -996,9 +1148,9 @@ function WardenHostelConsole() {
                       className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800"
                     >
                       <option value="" disabled>
-                        Select room
+                        Select {resHostel} room
                       </option>
-                      {state.hostelRooms.map((rm) => (
+                      {eligibleRooms.map((rm) => (
                         <option
                           key={rm.id}
                           value={rm.id}
@@ -1007,7 +1159,7 @@ function WardenHostelConsole() {
                             rm.occupantUids.length >= rm.capacity
                           }
                         >
-                          {rm.roomNumber} ({rm.occupantUids.length}/{rm.capacity})
+                          {rm.roomNumber} · {rm.hostelType} ({rm.occupantUids.length}/{rm.capacity})
                         </option>
                       ))}
                     </select>

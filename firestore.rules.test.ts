@@ -1,5 +1,5 @@
 /**
- * Security Rules Verification Suite (Dirty Dozen Adversarial Payloads)
+ * Security Rules Verification Suite (Dirty Dozen + Hostel Wing Isolation Payloads)
  * Intended for @firebase/rules-unit-testing against Firestore Emulator.
  */
 export const dirtyDozenCases = [
@@ -31,14 +31,14 @@ export const dirtyDozenCases = [
     name: '04. Cross-Resident PII Snooping',
     path: 'userPrivate/student-hostel-2',
     op: 'get',
-    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true },
+    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true, hostelType: 'Girls Hostel' },
     expected: 'PERMISSION_DENIED',
   },
   {
     name: '05. Resident Medical Tampering',
     path: 'userPrivate/student-hostel-2',
     op: 'update',
-    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true },
+    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true, hostelType: 'Girls Hostel' },
     payload: { medicalNotes: 'Tampered' },
     expected: 'PERMISSION_DENIED',
   },
@@ -62,7 +62,7 @@ export const dirtyDozenCases = [
     name: '08. Hostel Menu Sabotage by Student',
     path: 'hostelMenus/Monday',
     op: 'update',
-    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true },
+    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true, hostelType: 'Girls Hostel' },
     payload: { breakfastReady: true },
     expected: 'PERMISSION_DENIED',
   },
@@ -92,10 +92,41 @@ export const dirtyDozenCases = [
   },
   {
     name: '12. Chat Sender Spoofing',
-    path: 'chatThreads/hostel-main/messages/msg-fake',
+    path: 'chatThreads/hostel-girls/messages/msg-fake',
     op: 'create',
-    actor: { uid: 'student-hostel-1', role: 'student', isHostel: true },
-    payload: { id: 'msg-fake', threadId: 'hostel-main', senderUid: 'staff-warden', senderName: 'Warden', text: 'Fake notice', createdAt: '2026-11-22T10:00:00Z' },
+    actor: { uid: 'stu-1', role: 'student', gender: 'Girl', isHostel: true, hostelType: 'Girls Hostel' },
+    payload: { id: 'msg-fake', threadId: 'hostel-girls', senderUid: 'staff-warden-girls', senderName: 'Warden', text: 'Fake notice', createdAt: '2026-11-22T10:00:00Z' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '13. Cross-Wing Room Creation by Boys Hostel Warden',
+    path: 'hostelRooms/room-m999',
+    op: 'create',
+    actor: { uid: 'staff-warden', role: 'staff', gender: 'Boy', isWarden: true, hostelType: 'Boys Hostel' },
+    payload: { id: 'room-m999', roomNumber: 'M-999', block: 'Mullai Girls Hostel', hostelType: 'Girls Hostel', floor: '1st Floor', capacity: 2, occupantUids: [] },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '14. Cross-Wing Resident PII Access by Boys Hostel Warden',
+    path: 'userPrivate/stu-1',
+    op: 'get',
+    actor: { uid: 'staff-warden', role: 'staff', gender: 'Boy', isWarden: true, hostelType: 'Boys Hostel' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '15. Cross-Wing Hostel Chat Posting by Boy Resident',
+    path: 'chatThreads/hostel-girls/messages/msg-cross',
+    op: 'create',
+    actor: { uid: 'stu-3', role: 'student', gender: 'Boy', isHostel: true, hostelType: 'Boys Hostel' },
+    payload: { id: 'msg-cross', threadId: 'hostel-girls', senderUid: 'stu-3', senderName: 'Praveen', text: 'Hello', createdAt: '2026-11-22T10:00:00Z' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '16. Gender-Mismatched Hostel Assignment',
+    path: 'users/stu-3',
+    op: 'update',
+    actor: { uid: 'mgmt-1', role: 'management' },
+    payload: { gender: 'Boy', isHostel: true, hostelType: 'Girls Hostel' },
     expected: 'PERMISSION_DENIED',
   },
 ];

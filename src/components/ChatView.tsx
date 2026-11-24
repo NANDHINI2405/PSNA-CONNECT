@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquare, Plus, Send, Users } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
+import { HostelType, getUserHostelType } from '../types';
+
 export function ChatView() {
   const {
     currentUser,
@@ -19,19 +21,23 @@ export function ChatView() {
   const [showGroupForm, setShowGroupForm] = useState(false);
   const [groupTitle, setGroupTitle] = useState('');
   const [groupClass, setGroupClass] = useState('III CSE A');
+  const [groupHostelType, setGroupHostelType] = useState<HostelType>('Boys Hostel');
   const [groupType, setGroupType] = useState<'class' | 'hostel'>('class');
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  // Filter threads visible to this user's role
+  // Filter threads visible to this user's role and hostel wing
   const accessibleThreads = useMemo(() => {
     if (!currentUser) return [];
+    const myHostelType = getUserHostelType(currentUser);
     return state.chatThreads.filter((t) => {
       if (t.type === 'class') {
         if (currentUser.role === 'management' || currentUser.role === 'staff') return true;
         return !t.className || t.className === currentUser.className;
       }
       if (t.type === 'hostel') {
-        return currentUser.isHostel || currentUser.isWarden || currentUser.role === 'management';
+        if (currentUser.role === 'management') return true;
+        if (!currentUser.isHostel && !currentUser.isWarden) return false;
+        return !t.hostelType || t.hostelType === myHostelType;
       }
       if (t.type === 'dm') {
         return (
@@ -74,10 +80,12 @@ export function ChatView() {
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!groupTitle.trim()) return;
+    const wardenHostel = currentUser.isWarden ? getUserHostelType(currentUser) : null;
     const thread = await createGroupThread({
       type: groupType,
       title: groupTitle,
       className: groupType === 'class' ? groupClass : undefined,
+      hostelType: groupType === 'hostel' ? wardenHostel || groupHostelType : undefined,
     });
     setSelectedThreadId(thread.id);
     setGroupTitle('');
@@ -143,7 +151,7 @@ export function ChatView() {
                 <option value="class">Class Group</option>
                 <option value="hostel">Hostel Group</option>
               </select>
-              {groupType === 'class' && (
+              {groupType === 'class' ? (
                 <input
                   type="text"
                   value={groupClass}
@@ -151,6 +159,19 @@ export function ChatView() {
                   placeholder="Class (e.g. III CSE A)"
                   className="h-9 px-2.5 rounded-lg border border-slate-200 bg-white text-xs"
                 />
+              ) : currentUser.isWarden ? (
+                <div className="h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-100 text-xs flex items-center text-slate-700 font-medium">
+                  {getUserHostelType(currentUser) || 'Boys Hostel'}
+                </div>
+              ) : (
+                <select
+                  value={groupHostelType}
+                  onChange={(e) => setGroupHostelType(e.target.value as HostelType)}
+                  className="h-9 px-2.5 rounded-lg border border-slate-200 bg-white text-xs"
+                >
+                  <option value="Boys Hostel">Boys Hostel</option>
+                  <option value="Girls Hostel">Girls Hostel</option>
+                </select>
               )}
             </div>
             <button
@@ -239,7 +260,11 @@ export function ChatView() {
                   <h3 className="text-sm font-semibold text-slate-900">{activeThread.title}</h3>
                   <div className="text-xs text-slate-500">
                     {activeThread.type === 'hostel'
-                      ? 'Warden & Hostel Residents'
+                      ? `${activeThread.hostelType || 'Hostel'} · ${
+                          activeThread.hostelType === 'Girls Hostel'
+                            ? 'Female Warden & Girl Residents Only'
+                            : 'Male Warden & Boy Residents Only'
+                        }`
                       : activeThread.type === 'class'
                       ? 'Class Announcement & Discussion Group'
                       : 'Direct Message'}

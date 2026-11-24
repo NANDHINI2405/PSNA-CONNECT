@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getTodayDayName, getTodayIso } from '../services/dataService';
-import { EffectiveRole, NavScreen, getEffectiveRole, getRoleLabel } from '../types';
+import { EffectiveRole, NavScreen, getEffectiveRole, getRoleLabel, getUserHostelType } from '../types';
 
 function formatEffectiveRoleLabel(role: EffectiveRole): string {
   switch (role) {
@@ -66,7 +66,14 @@ export function DashboardView() {
         todayMenu.dinnerReady)
   );
 
-  const residents = state.users.filter((u) => u.isHostel);
+  const myHostelType = getUserHostelType(currentUser);
+  const residents = state.users.filter((u) => {
+    if (!u.isHostel) return false;
+    if (effectiveRole === 'warden' && myHostelType) {
+      return getUserHostelType(u) === myHostelType;
+    }
+    return true;
+  });
   const hostelInCount = residents.filter((r) => r.hostelStatus === 'In').length;
   const hostelOutCount = residents.filter((r) => r.hostelStatus === 'Out').length;
   const hostelLeaveCount = residents.filter((r) => r.hostelStatus === 'Leave').length;
@@ -238,7 +245,9 @@ export function DashboardView() {
 
         {effectiveRole === 'hostel_resident' && (
           <div className="bg-white border border-slate-200 rounded-2xl p-5">
-            <div className="text-xs font-medium text-slate-500">My Hostel Status</div>
+            <div className="text-xs font-medium text-slate-500">
+              {myHostelType || 'My Hostel'} Status
+            </div>
             <div className="text-2xl font-semibold text-slate-900 mt-1">
               {currentUser.hostelStatus || 'In'}
             </div>
@@ -250,7 +259,9 @@ export function DashboardView() {
 
         {(effectiveRole === 'warden' || effectiveRole === 'management') && (
           <div className="bg-white border border-slate-200 rounded-2xl p-5">
-            <div className="text-xs font-medium text-slate-500">Hostel Residents</div>
+            <div className="text-xs font-medium text-slate-500">
+              {effectiveRole === 'warden' && myHostelType ? `${myHostelType} Residents` : 'Hostel Residents'}
+            </div>
             <div className="text-2xl font-semibold text-slate-900 mt-1 tabular-nums">
               {hostelInCount} In
             </div>
