@@ -291,9 +291,27 @@ service cloud.firestore {
         && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
     }
 
+    function isValidHostelAttendanceSession(data) {
+      return data.keys().hasAll(['id', 'wardenUid', 'hostelType', 'sessionLabel', 'date', 'currentToken', 'active'])
+        && data.keys().hasOnly(['id', 'wardenUid', 'wardenName', 'hostelType', 'sessionLabel', 'date', 'currentToken', 'tokenIssuedAt', 'expiresAt', 'campusLat', 'campusLng', 'radiusMeters', 'active'])
+        && isValidId(data.id)
+        && isValidId(data.wardenUid)
+        && isValidHostelType(data.hostelType)
+        && data.sessionLabel is string && data.sessionLabel.size() >= 1 && data.sessionLabel.size() <= 60
+        && data.date is string && data.date.size() <= 20
+        && data.currentToken is string && data.currentToken.size() <= 64
+        && data.active is bool
+        && (!('wardenName' in data) || (data.wardenName is string && data.wardenName.size() <= 100))
+        && (!('tokenIssuedAt' in data) || data.tokenIssuedAt is number)
+        && (!('expiresAt' in data) || data.expiresAt is number)
+        && (!('campusLat' in data) || data.campusLat is number)
+        && (!('campusLng' in data) || data.campusLng is number)
+        && (!('radiusMeters' in data) || (data.radiusMeters is number && data.radiusMeters >= 50 && data.radiusMeters <= 1000));
+    }
+
     function isValidHostelAttendanceLog(data) {
       return data.keys().hasAll(['id', 'date', 'residentUid', 'status'])
-        && data.keys().hasOnly(['id', 'date', 'residentUid', 'residentName', 'roomNumber', 'hostelType', 'status', 'markedByUid'])
+        && data.keys().hasOnly(['id', 'date', 'residentUid', 'residentName', 'roomNumber', 'hostelType', 'status', 'markedByUid', 'sessionId', 'sessionLabel', 'markedVia', 'markedAt'])
         && isValidId(data.id)
         && isValidId(data.residentUid)
         && data.date is string && data.date.size() <= 20
@@ -301,7 +319,11 @@ service cloud.firestore {
         && data.status in ['In', 'Out', 'Leave']
         && (!('residentName' in data) || (data.residentName is string && data.residentName.size() <= 100))
         && (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 16))
-        && (!('markedByUid' in data) || isValidId(data.markedByUid));
+        && (!('markedByUid' in data) || isValidId(data.markedByUid))
+        && (!('sessionId' in data) || isValidId(data.sessionId))
+        && (!('sessionLabel' in data) || (data.sessionLabel is string && data.sessionLabel.size() <= 60))
+        && (!('markedVia' in data) || (data.markedVia in ['Warden', 'QR', 'Manual']))
+        && (!('markedAt' in data) || (data.markedAt is string && data.markedAt.size() <= 40));
     }
 
     function isValidCanteenItem(data) {
@@ -586,7 +608,25 @@ service cloud.firestore {
       allow delete: if isValidId(dayId) && isManagement();
     }
 
-    // 8. Hostel Attendance Logs (Strictly Wing-Scoped for Wardens)
+    // 8. Hostel Attendance Sessions & Logs (Strictly Wing-Scoped)
+    match /hostelAttendanceSessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn() && canAccessHostelWing(existing().hostelType);
+      allow list: if isSignedIn() && resource.data.wardenUid is string && canAccessHostelWing(resource.data.hostelType);
+      allow create: if isValidId(sessionId) && isWarden() && isValidHostelAttendanceSession(incoming()) && (
+        isManagement() || (isWingWardenOnly() && incoming().wardenUid == request.auth.uid && incoming().hostelType == callerHostelType())
+      );
+      allow update: if isValidId(sessionId) && isWarden() && isValidHostelAttendanceSession(incoming()) && (
+        isManagement() || (
+          isWingWardenOnly()
+          && existing().hostelType == callerHostelType()
+          && incoming().hostelType == existing().hostelType
+          && incoming().wardenUid == existing().wardenUid
+          && incoming().diff(existing()).affectedKeys().hasOnly(['currentToken', 'tokenIssuedAt', 'expiresAt', 'active'])
+        )
+      );
+      allow delete: if isValidId(sessionId) && isManagement();
+    }
+
     match /hostelAttendanceLogs/{logId} {
       allow get: if isValidId(logId) && (
         isManagement() ||
@@ -606,7 +646,21 @@ service cloud.firestore {
           && exists(userDocPath(incoming().residentUid))
           && get(userDocPath(incoming().residentUid)).data.isHostel == true
           && ('hostelType' in get(userDocPath(incoming().residentUid)).data)
-          && get(userDocPath(incoming().residentUid)).data.hostelType == callerHostelType())
+          && get(userDocPath(incoming().residentUid)).data.hostelType == callerHostelType()) ||
+        (hasUserProfile()
+          && currentUserRole().isHostel == true
+          && ('hostelType' in currentUserRole())
+          && incoming().residentUid == request.auth.uid
+          && ('hostelType' in incoming())
+          && incoming().hostelType == currentUserRole().hostelType
+          && incoming().status == 'In'
+          && ('markedVia' in incoming())
+          && incoming().markedVia in ['QR', 'Manual']
+          && incoming().markedByUid == request.auth.uid
+          && ('sessionId' in incoming())
+          && exists(/databases/$(database)/documents/hostelAttendanceSessions/$(incoming().sessionId))
+          && get(/databases/$(database)/documents/hostelAttendanceSessions/$(incoming().sessionId)).data.active == true
+          && get(/databases/$(database)/documents/hostelAttendanceSessions/$(incoming().sessionId)).data.hostelType == currentUserRole().hostelType)
       );
       allow update: if isValidId(logId) && isValidHostelAttendanceLog(incoming()) && incoming().residentUid == existing().residentUid && (
         isManagement() ||

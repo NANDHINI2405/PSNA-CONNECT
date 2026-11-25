@@ -1,15 +1,23 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import {
   AlertCircle,
   BedDouble,
+  Camera,
   CheckCircle2,
   Clock,
   Edit3,
   Home,
+  ImageUp,
+  MapPin,
   MessageSquare,
+  Play,
   Plus,
+  QrCode,
   Search,
   ShieldAlert,
+  StopCircle,
+  UserCheck,
   Utensils,
   XCircle,
 } from 'lucide-react';
@@ -26,6 +34,8 @@ import {
   getUserGender,
   getUserHostelType,
 } from '../types';
+import { getBrowserLocation, haversineMeters } from '../utils/geo';
+import { BarcodeDetectorCtor, decodeCanvasQr } from '../utils/qr';
 
 const DAYS: DayOfWeek[] = [
   'Monday',
@@ -73,21 +83,41 @@ export function HostelView() {
 function ResidentHostelView() {
   const {
     currentUser,
+    dataMode,
     state,
     visibleNotices,
     updateMyHostelStatus,
+    markResidentHostelAttendance,
     setActiveScreen,
   } = useApp();
 
   const todayDay = getTodayDayName();
   const [selectedDay, setSelectedDay] = useState<DayOfWeek>(todayDay);
   const [statusFeedback, setStatusFeedback] = useState<string | null>(null);
+  const [manualCode, setManualCode] = useState('');
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [useCampusAnchorDemo, setUseCampusAnchorDemo] = useState(false);
+  const [scanStatus, setScanStatus] = useState<{
+    type: 'success' | 'error' | 'info';
+    message: string;
+  } | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
-  if (!currentUser) return null;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const verifyingRef = useRef(false);
+  const lastAttemptRef = useRef<{ payload: string; at: number }>({ payload: '', at: 0 });
+  const verifyFnRef = useRef<(rawInput: string, markedVia: 'QR' | 'Manual') => Promise<void>>(
+    async () => {}
+  );
 
-  const myHostelType: HostelType =
-    getUserHostelType(currentUser) ||
-    (getUserGender(currentUser) === 'Girl' ? 'Girls Hostel' : 'Boys Hostel');
+  const myHostelType: HostelType = currentUser
+    ? getUserHostelType(currentUser) ||
+      (getUserGender(currentUser) === 'Girl' ? 'Girls Hostel' : 'Boys Hostel')
+    : 'Boys Hostel';
 
   const wingRooms = useMemo(
     () => state.hostelRooms.filter((r) => r.hostelType === myHostelType),
@@ -101,13 +131,13 @@ function ResidentHostelView() {
 
   const myRoom = wingRooms.find(
     (r) =>
-      r.occupantUids.includes(currentUser.uid) ||
-      (currentUser.roomNumber && r.roomNumber === currentUser.roomNumber)
+      (currentUser && r.occupantUids.includes(currentUser.uid)) ||
+      (currentUser?.roomNumber && r.roomNumber === currentUser.roomNumber)
   );
 
   // Roommates: ONLY name and className from same hostel wing (strict privacy rule!)
   const roommates = useMemo(() => {
-    if (!myRoom) return [];
+    if (!myRoom || !currentUser) return [];
     return state.users.filter(
       (u) =>
         u.uid !== currentUser.uid &&
@@ -115,7 +145,281 @@ function ResidentHostelView() {
         getUserHostelType(u) === myHostelType &&
         (myRoom.occupantUids.includes(u.uid) || u.roomNumber === myRoom.roomNumber)
     );
-  }, [myRoom, state.users, currentUser.uid, myHostelType]);
+  }, [myRoom, state.users, currentUser, myHostelType]);
+
+  const activeHostelSessions = useMemo(
+    () =>
+      state.hostelAttendanceSessions
+        .filter((s) => s.active && s.hostelType === myHostelType)
+        .sort((a, b) => (b.tokenIssuedAt || 0) - (a.tokenIssuedAt || 0)),
+    [state.hostelAttendanceSessions, myHostelType]
+  );
+
+  const myHostelLogs = useMemo(() => {
+    if (!currentUser) return [];
+    return state.hostelAttendanceLogs
+      .filter((l) => l.residentUid === currentUser.uid)
+      .sort((a, b) => {
+        const dateDiff = b.date.localeCompare(a.date);
+        if (dateDiff !== 0) return dateDiff;
+        return (b.markedAt || '').localeCompare(a.markedAt || '');
+      });
+  }, [state.hostelAttendanceLogs, currentUser]);
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  };
+
+  useEffect(() => {
+    return () => stopCamera();
+  }, []);
+
+  const verifyHostelRollCall = async (rawInput: string, markedVia: 'QR' | 'Manual') => {
+    if (verifyingRef.current || !currentUser) return;
+    verifyingRef.current = true;
+    setVerifying(true);
+    setScanStatus({ type: 'info', message: 'Verifying hostel roll-call code & location...' });
+
+    try {
+      let token = rawInput.trim();
+      let targetSessionId: string | null = null;
+      if (token.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(token) as { sessionId?: string; token?: string };
+          if (parsed.token) token = parsed.token.trim();
+          if (parsed.sessionId) targetSessionId = parsed.sessionId.trim();
+        } catch {
+          // treat as plain code
+        }
+      }
+
+      const normalizedToken = token.toUpperCase();
+      let matchingSession = targetSessionId
+        ? state.hostelAttendanceSessions.find(
+            (s) => s.id === targetSessionId && s.hostelType === myHostelType
+          )
+        : activeHostelSessions.find((s) => {
+            const expected = s.currentToken.trim().toUpperCase();
+            return (
+              expected === normalizedToken ||
+              expected.replace(/^PSNA-/, '') === normalizedToken
+            );
+          });
+
+      if (!matchingSession && !targetSessionId) {
+        matchingSession = activeHostelSessions[0];
+      }
+
+      if (!matchingSession) {
+        throw new Error(`No active ${myHostelType} roll-call session is running right now.`);
+      }
+      if (!matchingSession.active) {
+        throw new Error(
+          `${matchingSession.sessionLabel} (${matchingSession.hostelType}) has already ended.`
+        );
+      }
+
+      const alreadyMarked = myHostelLogs.find((l) => l.sessionId === matchingSession.id);
+      if (alreadyMarked) {
+        setScanStatus({
+          type: 'success',
+          message: `You are already marked In for ${matchingSession.sessionLabel} (${alreadyMarked.date}).`,
+        });
+        setManualCode('');
+        stopCamera();
+        return;
+      }
+
+      let distance = 0;
+      if (!(dataMode === 'demo' && useCampusAnchorDemo)) {
+        const pos = await getBrowserLocation();
+        distance = haversineMeters(
+          pos.lat,
+          pos.lng,
+          matchingSession.campusLat,
+          matchingSession.campusLng
+        );
+        if (distance > matchingSession.radiusMeters) {
+          throw new Error(
+            `You are ${distance}m from ${myHostelType} (allowed radius: ${matchingSession.radiusMeters}m). Attendance rejected outside hostel geofence.`
+          );
+        }
+      }
+
+      const log = await markResidentHostelAttendance({
+        session: matchingSession,
+        token,
+        markedVia,
+      });
+
+      setScanStatus({
+        type: 'success',
+        message: `Hostel attendance marked In for ${log.sessionLabel || 'Roll Call'} (${log.date})${
+          dataMode === 'demo' && useCampusAnchorDemo
+            ? ' · Campus anchor verified.'
+            : ` · Verified ${distance}m from hostel.`
+        }`,
+      });
+      setManualCode('');
+      stopCamera();
+    } catch (err) {
+      setScanStatus({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Unable to mark hostel attendance.',
+      });
+    } finally {
+      verifyingRef.current = false;
+      setVerifying(false);
+    }
+  };
+
+  verifyFnRef.current = verifyHostelRollCall;
+
+  const startCamera = async () => {
+    setCameraError(null);
+    setScanStatus(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError(
+        'Live camera streaming is unavailable in this browser. Use "Scan QR Image" or Manual Roll-Call Code.'
+      );
+      return;
+    }
+    try {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+      streamRef.current = stream;
+      lastAttemptRef.current = { payload: '', at: 0 };
+      setCameraActive(true);
+    } catch (err) {
+      setCameraError(
+        err instanceof Error
+          ? `Camera permission denied or unavailable (${err.message}). Try "Scan QR Image" or Manual Code.`
+          : 'Unable to open camera.'
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (!cameraActive || !streamRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.srcObject = streamRef.current;
+    video.play().catch(() => {});
+
+    let cancelled = false;
+    const canvas = canvasRef.current || document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const DetectorCtor = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor })
+      .BarcodeDetector;
+    let detector: ReturnType<() => InstanceType<BarcodeDetectorCtor>> | null = null;
+    if (DetectorCtor) {
+      try {
+        detector = new DetectorCtor({ formats: ['qr_code'] });
+      } catch {
+        detector = null;
+      }
+    }
+
+    let timerId: number | undefined;
+
+    const scanFrame = async () => {
+      if (cancelled || !videoRef.current) return;
+      const v = videoRef.current;
+      if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0 && !verifyingRef.current) {
+        let detected: string | null = null;
+        if (ctx) {
+          try {
+            detected = decodeCanvasQr(canvas, ctx, v, v.videoWidth, v.videoHeight);
+          } catch {
+            // fallback below
+          }
+        }
+        if (!detected && detector) {
+          try {
+            const found = await detector.detect(v);
+            detected = found.find((f) => f.rawValue)?.rawValue || null;
+          } catch {
+            // ignore frame read errors
+          }
+        }
+        if (detected) {
+          const now = Date.now();
+          const isSameRecent =
+            lastAttemptRef.current.payload === detected && now - lastAttemptRef.current.at < 3500;
+          if (!isSameRecent) {
+            lastAttemptRef.current = { payload: detected, at: now };
+            await verifyFnRef.current(detected, 'QR');
+          }
+        }
+      }
+      if (!cancelled) {
+        timerId = window.setTimeout(scanFrame, 250);
+      }
+    };
+
+    timerId = window.setTimeout(scanFrame, 300);
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+    };
+  }, [cameraActive]);
+
+  const handleQrImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setCameraError(null);
+    setScanStatus({ type: 'info', message: 'Reading hostel roll-call QR image...' });
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = canvasRef.current || document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      let raw: string | null = null;
+      if (ctx) {
+        raw = decodeCanvasQr(canvas, ctx, bitmap, bitmap.width, bitmap.height);
+      }
+      if (!raw) {
+        const DetectorCtor = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor })
+          .BarcodeDetector;
+        if (DetectorCtor) {
+          try {
+            const detector = new DetectorCtor({ formats: ['qr_code'] });
+            const found = await detector.detect(bitmap);
+            raw = found.find((f) => f.rawValue)?.rawValue || null;
+          } catch {
+            // ignore
+          }
+        }
+      }
+      bitmap.close();
+      if (!raw) {
+        throw new Error('No readable QR code found in the uploaded image.');
+      }
+      await verifyHostelRollCall(raw, 'QR');
+    } catch (err) {
+      setScanStatus({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Unable to decode uploaded QR image.',
+      });
+    }
+  };
+
+  if (!currentUser) return null;
 
   const vacantRooms = wingRooms.filter((r) => r.occupantUids.length < r.capacity);
   const selectedMenu = state.hostelMenus.find((m) => m.day === selectedDay) || state.hostelMenus[0];
@@ -281,6 +585,228 @@ function ResidentHostelView() {
         </div>
       </section>
 
+      {/* Hostel Roll-Call Attendance Scanner & History */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Scan / Enter Roll-Call Code */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+          <div>
+            <div className="text-xs font-medium text-blue-700">{myHostelType} Attendance</div>
+            <h3 className="text-base font-semibold text-slate-900 mt-0.5">
+              Mark Hostel Roll-Call Attendance (QR / Code)
+            </h3>
+            <p className="text-xs text-slate-600 mt-1">
+              Scan the Warden&apos;s 30-second roll-call QR code or enter the code shown on the hostel notice screen.
+            </p>
+          </div>
+
+          {activeHostelSessions.length === 0 ? (
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
+              No active {myHostelType} QR roll-call session is running right now. Check with your Warden or update your daily movement status above.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {activeHostelSessions.map((sess) => {
+                const already = myHostelLogs.find((l) => l.sessionId === sess.id);
+                return (
+                  <div
+                    key={sess.id}
+                    className={`p-3.5 rounded-xl border text-xs space-y-1 ${
+                      already
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                        : 'bg-blue-50 border-blue-200 text-blue-900'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 font-semibold">
+                      <span>
+                        {sess.sessionLabel} · {sess.hostelType}
+                      </span>
+                      {already ? (
+                        <span className="text-emerald-700 font-semibold">Marked In</span>
+                      ) : (
+                        <span className="text-blue-700 font-semibold">Live Now</span>
+                      )}
+                    </div>
+                    <div>
+                      Warden: {sess.wardenName} · Date: {sess.date} · Radius:{' '}
+                      <span className="font-mono tabular-nums">{sess.radiusMeters}m</span>
+                    </div>
+                    {dataMode === 'demo' && !already && (
+                      <div className="pt-1 flex items-center justify-between gap-2 text-[11px] text-blue-800">
+                        <span>
+                          Demo Roll-Call Code:{' '}
+                          <strong className="font-mono">{sess.currentToken}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setManualCode(sess.currentToken)}
+                          className="underline font-medium hover:text-blue-950"
+                        >
+                          Fill code
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Camera & Upload Controls */}
+          <div className="flex flex-wrap gap-2">
+            {!cameraActive ? (
+              <button
+                type="button"
+                onClick={startCamera}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium inline-flex items-center gap-1.5"
+              >
+                <Camera className="w-4 h-4" />
+                <span>Open Camera Scanner</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={stopCamera}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-medium inline-flex items-center gap-1.5"
+              >
+                <StopCircle className="w-4 h-4" />
+                <span>Close Camera</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="min-h-[40px] px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium inline-flex items-center gap-1.5"
+            >
+              <ImageUp className="w-4 h-4" />
+              <span>Scan QR Image</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleQrImageUpload}
+              className="hidden"
+            />
+          </div>
+
+          {cameraActive && (
+            <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-950 aspect-video relative">
+              <video ref={videoRef} playsInline muted className="w-full h-full object-cover" />
+            </div>
+          )}
+          <canvas ref={canvasRef} className="hidden" />
+
+          {cameraError && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+              {cameraError}
+            </div>
+          )}
+
+          {dataMode === 'demo' && (
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={useCampusAnchorDemo}
+                onChange={(e) => setUseCampusAnchorDemo(e.target.checked)}
+                className="rounded border-slate-300 text-blue-600"
+              />
+              <span>Demo mode: use campus hostel coordinates if GPS is blocked</span>
+            </label>
+          )}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (manualCode.trim()) verifyHostelRollCall(manualCode, 'Manual');
+            }}
+            className="flex flex-col sm:flex-row gap-2"
+          >
+            <input
+              type="text"
+              value={manualCode}
+              onChange={(e) => setManualCode(e.target.value)}
+              placeholder="Enter roll-call code (e.g. PSNA-742910)"
+              className="flex-1 h-11 px-3.5 rounded-xl border border-slate-200 font-mono text-sm uppercase text-slate-900"
+            />
+            <button
+              type="submit"
+              disabled={verifying || !manualCode.trim()}
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>{verifying ? 'Verifying...' : 'Mark Hostel In'}</span>
+            </button>
+          </form>
+
+          {scanStatus && (
+            <div
+              role="status"
+              className={`p-3.5 rounded-xl border text-xs flex items-start gap-2 ${
+                scanStatus.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : scanStatus.type === 'error'
+                  ? 'bg-red-50 border-red-200 text-red-900'
+                  : 'bg-blue-50 border-blue-200 text-blue-900'
+              }`}
+            >
+              {scanStatus.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0" />
+              )}
+              <span>{scanStatus.message}</span>
+            </div>
+          )}
+        </div>
+
+        {/* My Hostel Attendance History */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">My Hostel Attendance Log</h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Roll-call records marked via QR check-in or {myHostelType} Warden
+              </p>
+            </div>
+            <span className="text-xs text-slate-500 tabular-nums">
+              {myHostelLogs.length} record{myHostelLogs.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          {myHostelLogs.length === 0 ? (
+            <div className="p-6 rounded-xl bg-slate-50 border border-slate-200 text-center text-sm text-slate-500">
+              No hostel attendance entries recorded yet.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto pr-1">
+              {myHostelLogs.map((log) => (
+                <div key={log.id} className="py-3 flex items-center justify-between gap-3 text-sm">
+                  <div>
+                    <div className="font-medium text-slate-900">
+                      {log.sessionLabel || 'Daily Roll Call'}
+                    </div>
+                    <div className="text-xs text-slate-500 tabular-nums mt-0.5">
+                      {log.date} · Room {log.roomNumber} · Via {log.markedVia || 'Warden'}
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2.5 py-1 rounded-lg border text-xs font-medium ${
+                      log.status === 'In'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : log.status === 'Out'
+                        ? 'bg-amber-50 border-amber-200 text-amber-800'
+                        : 'bg-slate-100 border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {log.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
       {/* Food Menu */}
       <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -397,6 +923,9 @@ function WardenHostelConsole() {
     state,
     getPrivateForUser,
     updateHostelMenu,
+    startHostelAttendanceSession,
+    rotateHostelSessionToken,
+    stopHostelAttendanceSession,
     saveHostelAttendanceBatch,
     allotResidentRoom,
     createHostelRoom,
@@ -420,6 +949,20 @@ function WardenHostelConsole() {
   const [selectedResidentUid, setSelectedResidentUid] = useState<string | null>(null);
   const [selectedDay, setSelectedDay] = useState<DayOfWeek>(getTodayDayName());
   const [attendanceDraft, setAttendanceDraft] = useState<Record<string, HostelStatus>>({});
+  const [attendanceDate, setAttendanceDate] = useState<string>(() => getTodayIso());
+  const [manualSessionLabel, setManualSessionLabel] = useState<string>('Night Roll Call');
+  const [logDateFilter, setLogDateFilter] = useState<'selected' | 'all'>('selected');
+
+  // Hostel Live QR Roll-Call state
+  const [qrSessionWing, setQrSessionWing] = useState<HostelType>(wardenHostelType || 'Boys Hostel');
+  const [qrSessionLabel, setQrSessionLabel] = useState<string>('Night Roll Call');
+  const [qrLocationMode, setQrLocationMode] = useState<'campus' | 'gps'>('campus');
+  const [qrRadiusMeters, setQrRadiusMeters] = useState<number>(250);
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrSecondsLeft, setQrSecondsLeft] = useState<number>(30);
+  const [startingQr, setStartingQr] = useState<boolean>(false);
+  const rotatingHostelRef = useRef(false);
+
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
   );
@@ -446,6 +989,59 @@ function WardenHostelConsole() {
   const [roomCapacity, setRoomCapacity] = useState('2');
 
   const effectiveRoomHostelType: HostelType = wardenHostelType || newRoomHostelType;
+  const effectiveQrWing: HostelType =
+    wardenHostelType || (activeWingFilter !== 'All' ? activeWingFilter : qrSessionWing);
+
+  const activeHostelQrSession = useMemo(
+    () =>
+      state.hostelAttendanceSessions.find(
+        (s) => s.active && s.hostelType === effectiveQrWing
+      ) || null,
+    [state.hostelAttendanceSessions, effectiveQrWing]
+  );
+
+  useEffect(() => {
+    if (!activeHostelQrSession) {
+      setQrDataUrl('');
+      rotatingHostelRef.current = false;
+      return;
+    }
+
+    rotatingHostelRef.current = false;
+    setQrSecondsLeft(
+      Math.max(0, Math.ceil((activeHostelQrSession.expiresAt - Date.now()) / 1000))
+    );
+
+    const renderQr = async () => {
+      const payload = JSON.stringify({
+        sessionId: activeHostelQrSession.id,
+        token: activeHostelQrSession.currentToken,
+      });
+      try {
+        const url = await QRCode.toDataURL(payload, { width: 220, margin: 2 });
+        setQrDataUrl(url);
+      } catch {
+        // ignore
+      }
+    };
+    renderQr();
+
+    const interval = setInterval(() => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((activeHostelQrSession.expiresAt - Date.now()) / 1000)
+      );
+      setQrSecondsLeft(remaining);
+      if (remaining <= 0 && !rotatingHostelRef.current) {
+        rotatingHostelRef.current = true;
+        rotateHostelSessionToken(activeHostelQrSession.id).catch(() => {
+          rotatingHostelRef.current = false;
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [activeHostelQrSession, rotateHostelSessionToken]);
 
   const residents = useMemo(() => {
     return state.users.filter((u) => {
@@ -558,11 +1154,17 @@ function WardenHostelConsole() {
           residentName: r.name,
           roomNumber: r.roomNumber || 'Unassigned',
           status: getStatusForResident(r.uid, r.hostelStatus),
-        }))
+        })),
+        {
+          date: attendanceDate,
+          sessionLabel: manualSessionLabel,
+        }
       );
       setFeedback({
         type: 'success',
-        message: `Saved daily ${activeWingFilter === 'All' ? '' : `${activeWingFilter} `}attendance for ${getTodayIso()} (${totals.inCount} In, ${totals.outCount} Out, ${totals.leaveCount} Leave).`,
+        message: `Saved ${manualSessionLabel || 'Daily Roll Call'} (${
+          activeWingFilter === 'All' ? 'All Hostels' : activeWingFilter
+        }) for ${attendanceDate}: ${totals.inCount} In, ${totals.outCount} Out, ${totals.leaveCount} Leave.`,
       });
     } catch (err) {
       setFeedback({
@@ -571,6 +1173,68 @@ function WardenHostelConsole() {
       });
     }
   };
+
+  const handleMarkAllIn = () => {
+    const nextDraft: Record<string, HostelStatus> = {};
+    residents.forEach((r) => {
+      nextDraft[r.uid] = 'In';
+    });
+    setAttendanceDraft(nextDraft);
+  };
+
+  const handleStartHostelQr = async () => {
+    setFeedback(null);
+    setStartingQr(true);
+    try {
+      let lat = state.geofence.lat;
+      let lng = state.geofence.lng;
+      if (qrLocationMode === 'gps') {
+        const pos = await getBrowserLocation();
+        lat = pos.lat;
+        lng = pos.lng;
+      }
+      const created = await startHostelAttendanceSession({
+        hostelType: effectiveQrWing,
+        sessionLabel: qrSessionLabel,
+        lat,
+        lng,
+        radiusMeters: qrRadiusMeters,
+      });
+      setFeedback({
+        type: 'success',
+        message: `Started live QR roll-call "${created.sessionLabel}" for ${created.hostelType}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to start hostel QR roll call.',
+      });
+    } finally {
+      setStartingQr(false);
+    }
+  };
+
+  const visibleHostelLogs = useMemo(() => {
+    return state.hostelAttendanceLogs
+      .filter((l) => {
+        if (activeWingFilter !== 'All' && l.hostelType && l.hostelType !== activeWingFilter) {
+          return false;
+        }
+        if (logDateFilter === 'selected' && l.date !== attendanceDate) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const dateDiff = b.date.localeCompare(a.date);
+        if (dateDiff !== 0) return dateDiff;
+        return (b.markedAt || '').localeCompare(a.markedAt || '');
+      });
+  }, [activeWingFilter, attendanceDate, logDateFilter, state.hostelAttendanceLogs]);
+
+  const activeQrAttendees = activeHostelQrSession
+    ? state.hostelAttendanceLogs.filter((l) => l.sessionId === activeHostelQrSession.id)
+    : [];
 
   const handleAllotRoom = async (residentUid: string, roomId: string) => {
     setFeedback(null);
@@ -1371,63 +2035,390 @@ function WardenHostelConsole() {
       )}
 
       {tab === 'attendance' && (
-        <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <h3 className="text-base font-semibold text-slate-900">
-                Daily Hostel Attendance · {getTodayIso()}
-              </h3>
-              <p className="text-sm text-slate-600 mt-0.5 tabular-nums">
-                Totals: {totals.inCount} In · {totals.outCount} Out · {totals.leaveCount} Leave
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleSaveAttendance}
-              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium inline-flex items-center gap-2 self-start sm:self-auto"
-            >
-              <Home className="w-4 h-4" />
-              <span>Save Attendance</span>
-            </button>
-          </div>
-
-          <div className="divide-y divide-slate-100">
-            {residents.map((res) => {
-              const currentSt = getStatusForResident(res.uid, res.hostelStatus);
-              return (
-                <div
-                  key={res.uid}
-                  className="py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
-                >
+        <div className="space-y-6">
+          {/* 1. Live Hostel Roll-Call QR Session */}
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+              {!activeHostelQrSession ? (
+                <>
                   <div>
-                    <div className="text-sm font-semibold text-slate-900">{res.name}</div>
-                    <div className="text-xs text-slate-500">
-                      Room {res.roomNumber || 'Unassigned'} · {res.className}
+                    <div className="text-xs font-medium text-blue-700">
+                      Live QR Roll-Call Attendance
+                    </div>
+                    <h3 className="text-base font-semibold text-slate-900 mt-0.5">
+                      Start {effectiveQrWing} QR Roll Call
+                    </h3>
+                    <p className="text-xs text-slate-600 mt-1">
+                      Generate a 30-second rotating QR code &amp; token so {effectiveQrWing}{' '}
+                      residents can check in from the Hostel page.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Hostel Wing
+                      </label>
+                      {wardenHostelType ? (
+                        <div className="h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs font-medium text-slate-800 flex items-center">
+                          {wardenHostelType}
+                        </div>
+                      ) : (
+                        <select
+                          value={effectiveQrWing}
+                          onChange={(e) => {
+                            const next = e.target.value as HostelType;
+                            setQrSessionWing(next);
+                            setWingFilter(next);
+                          }}
+                          className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                        >
+                          <option value="Boys Hostel">Boys Hostel (Boys Only)</option>
+                          <option value="Girls Hostel">Girls Hostel (Girls Only)</option>
+                        </select>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Roll-Call Session
+                      </label>
+                      <select
+                        value={qrSessionLabel}
+                        onChange={(e) => setQrSessionLabel(e.target.value)}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                      >
+                        <option value="Night Roll Call">Night Roll Call (9:00 PM)</option>
+                        <option value="Morning Roll Call">Morning Roll Call (7:30 AM)</option>
+                        <option value="Evening Study Roll Call">Evening Study Roll Call</option>
+                        <option value="Weekend Inspection">Weekend Inspection</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Allowed Radius
+                      </label>
+                      <select
+                        value={qrRadiusMeters}
+                        onChange={(e) => setQrRadiusMeters(Number(e.target.value))}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                      >
+                        <option value={100}>100 meters</option>
+                        <option value={250}>250 meters</option>
+                        <option value={500}>500 meters</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Anchor Location
+                      </label>
+                      <select
+                        value={qrLocationMode}
+                        onChange={(e) => setQrLocationMode(e.target.value as 'campus' | 'gps')}
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                      >
+                        <option value="campus">Use Hostel / Campus Center</option>
+                        <option value="gps">Use My Live GPS</option>
+                      </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 w-full sm:w-64">
-                    {(['In', 'Out', 'Leave'] as HostelStatus[]).map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        onClick={() =>
-                          setAttendanceDraft((prev) => ({ ...prev, [res.uid]: st }))
-                        }
-                        className={`min-h-[40px] rounded-xl border text-xs font-medium transition-colors ${
-                          currentSt === st
-                            ? 'bg-blue-600 border-blue-600 text-white'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        {st}
-                      </button>
-                    ))}
+
+                  <button
+                    type="button"
+                    disabled={startingQr}
+                    onClick={handleStartHostelQr}
+                    className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    <span>
+                      {startingQr
+                        ? 'Starting Hostel QR Session...'
+                        : `Start ${effectiveQrWing} QR Roll Call`}
+                    </span>
+                  </button>
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-emerald-700">
+                        Live {activeHostelQrSession.hostelType} Roll Call Active
+                      </div>
+                      <h3 className="text-lg font-semibold text-slate-900 mt-0.5">
+                        {activeHostelQrSession.sessionLabel}
+                      </h3>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        Warden: {activeHostelQrSession.wardenName} · Radius{' '}
+                        {activeHostelQrSession.radiusMeters}m
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => stopHostelAttendanceSession(activeHostelQrSession.id)}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-medium inline-flex items-center gap-1.5"
+                    >
+                      <StopCircle className="w-4 h-4" />
+                      <span>End Session</span>
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-center gap-5 p-4 rounded-xl bg-slate-50 border border-slate-200">
+                    {qrDataUrl && (
+                      <img
+                        src={qrDataUrl}
+                        alt="Hostel roll-call QR code"
+                        className="w-40 h-40 rounded-xl bg-white p-2 border border-slate-200 shrink-0"
+                      />
+                    )}
+                    <div className="space-y-2 text-center sm:text-left">
+                      <div className="text-xs text-slate-500">Current Rotating Token</div>
+                      <div className="text-2xl font-mono font-bold text-slate-900 tracking-wide">
+                        {activeHostelQrSession.currentToken}
+                      </div>
+                      <div className="text-xs font-medium text-blue-700 tabular-nums">
+                        Refreshes in {qrSecondsLeft}s
+                      </div>
+                      <div className="w-40 h-1.5 bg-slate-200 rounded-full overflow-hidden mx-auto sm:mx-0">
+                        <div
+                          className="h-full bg-blue-600 transition-all"
+                          style={{ width: `${Math.min(100, Math.round((qrSecondsLeft / 30) * 100))}%` }}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </section>
+              )}
+            </div>
+
+            {/* Live QR Scanned Roster */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-emerald-600" />
+                  <h3 className="text-base font-semibold text-slate-900">
+                    Live Roll-Call Check-Ins ({effectiveQrWing})
+                  </h3>
+                </div>
+                <span className="text-xs font-semibold text-emerald-700 tabular-nums">
+                  {activeQrAttendees.length} Checked In
+                </span>
+              </div>
+
+              {!activeHostelQrSession ? (
+                <div className="p-6 rounded-xl bg-slate-50 border border-slate-200 text-center text-sm text-slate-500">
+                  Start a live QR roll-call session to see residents check in with QR &amp; location verification in real time.
+                </div>
+              ) : activeQrAttendees.length === 0 ? (
+                <div className="p-6 rounded-xl bg-slate-50 border border-slate-200 text-center text-sm text-slate-500">
+                  Waiting for {activeHostelQrSession.hostelType} residents to scan or enter{' '}
+                  <span className="font-mono font-semibold text-slate-800">
+                    {activeHostelQrSession.currentToken}
+                  </span>
+                  .
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                  {activeQrAttendees.map((rec) => (
+                    <div key={rec.id} className="py-2.5 flex items-center justify-between text-sm">
+                      <div>
+                        <div className="font-medium text-slate-900">{rec.residentName}</div>
+                        <div className="text-xs text-slate-500">
+                          Room {rec.roomNumber} · Via {rec.markedVia || 'QR'}
+                        </div>
+                      </div>
+                      <span className="text-xs font-semibold text-emerald-700">{rec.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* 2. Manual Hostel Roll Call */}
+          <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">
+                  Manual Hostel Roll Call · {attendanceDate}
+                </h3>
+                <p className="text-sm text-slate-600 mt-0.5 tabular-nums">
+                  Totals: {totals.inCount} In · {totals.outCount} Out · {totals.leaveCount} Leave
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  aria-label="Attendance date"
+                  value={attendanceDate}
+                  onChange={(e) => setAttendanceDate(e.target.value || getTodayIso())}
+                  className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800"
+                />
+                <input
+                  type="text"
+                  aria-label="Roll call session name"
+                  value={manualSessionLabel}
+                  onChange={(e) => setManualSessionLabel(e.target.value)}
+                  placeholder="Session name (e.g. Night Roll Call)"
+                  className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs text-slate-800 w-44"
+                />
+                <button
+                  type="button"
+                  onClick={handleMarkAllIn}
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium whitespace-nowrap"
+                >
+                  Mark All In
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAttendance}
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-medium inline-flex items-center gap-2 whitespace-nowrap"
+                >
+                  <Home className="w-4 h-4" />
+                  <span>Save Attendance</span>
+                </button>
+              </div>
+            </div>
+
+            {residents.length === 0 ? (
+              <p className="text-sm text-slate-500 py-6 text-center">
+                No residents found in {activeWingFilter}.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {residents.map((res) => {
+                  const currentSt = getStatusForResident(res.uid, res.hostelStatus);
+                  return (
+                    <div
+                      key={res.uid}
+                      className="py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                    >
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {res.name}{' '}
+                          <span className="text-xs font-normal text-blue-700">
+                            ({getUserHostelType(res) || 'Hostel'})
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          Room {res.roomNumber || 'Unassigned'} · {res.className || res.department}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 w-full sm:w-64">
+                        {(['In', 'Out', 'Leave'] as HostelStatus[]).map((st) => (
+                          <button
+                            key={st}
+                            type="button"
+                            onClick={() =>
+                              setAttendanceDraft((prev) => ({ ...prev, [res.uid]: st }))
+                            }
+                            className={`min-h-[40px] rounded-xl border text-xs font-medium transition-colors ${
+                              currentSt === st
+                                ? 'bg-blue-600 border-blue-600 text-white'
+                                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            {st}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* 3. Recorded Hostel Attendance Logs */}
+          <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">
+                  Recorded Hostel Attendance Logs
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Combined log of Warden roll-calls and resident QR check-ins
+                </p>
+              </div>
+              <div className="flex gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setLogDateFilter('selected')}
+                  className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium ${
+                    logDateFilter === 'selected'
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {attendanceDate}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLogDateFilter('all')}
+                  className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium ${
+                    logDateFilter === 'all'
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  All Dates ({state.hostelAttendanceLogs.length})
+                </button>
+              </div>
+            </div>
+
+            {visibleHostelLogs.length === 0 ? (
+              <p className="text-sm text-slate-500 py-4 text-center">
+                No hostel attendance logs recorded for this filter.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs text-slate-500">
+                      <th className="py-2.5 pr-4 font-medium">Date</th>
+                      <th className="py-2.5 pr-4 font-medium">Resident</th>
+                      <th className="py-2.5 pr-4 font-medium">Room &amp; Wing</th>
+                      <th className="py-2.5 pr-4 font-medium">Session</th>
+                      <th className="py-2.5 pr-4 font-medium">Status</th>
+                      <th className="py-2.5 font-medium">Method</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {visibleHostelLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td className="py-3 pr-4 font-mono text-xs text-slate-600 tabular-nums">
+                          {log.date}
+                        </td>
+                        <td className="py-3 pr-4 font-medium text-slate-900">{log.residentName}</td>
+                        <td className="py-3 pr-4 text-slate-600 text-xs">
+                          Room {log.roomNumber} · {log.hostelType || 'Hostel'}
+                        </td>
+                        <td className="py-3 pr-4 text-slate-700 text-xs">
+                          {log.sessionLabel || 'Daily Roll Call'}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <span
+                            className={`text-xs font-semibold ${
+                              log.status === 'In'
+                                ? 'text-emerald-700'
+                                : log.status === 'Out'
+                                ? 'text-amber-700'
+                                : 'text-slate-600'
+                            }`}
+                          >
+                            {log.status}
+                          </span>
+                        </td>
+                        <td className="py-3 text-xs text-slate-500">{log.markedVia || 'Warden'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
       )}
 
       {tab === 'approvals' && (

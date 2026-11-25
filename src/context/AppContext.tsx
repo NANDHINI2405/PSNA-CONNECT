@@ -48,6 +48,7 @@ import {
   EffectiveRole,
   Gender,
   HostelAttendanceLog,
+  HostelAttendanceSession,
   HostelMenu,
   HostelRoom,
   HostelStatus,
@@ -65,6 +66,7 @@ import {
   UserPrivateInfo,
   UserProfile,
   canAccessScreen,
+  canUserAccessHostelType,
   deriveClassName,
   getAllowedScreens,
   getDefaultBlockForHostel,
@@ -159,8 +161,23 @@ interface AppContextValue {
   // Hostel Actions
   updateMyHostelStatus: (status: HostelStatus) => Promise<void>;
   updateHostelMenu: (day: DayOfWeek, updates: Partial<HostelMenu>) => Promise<void>;
+  startHostelAttendanceSession: (payload: {
+    hostelType: HostelType;
+    sessionLabel: string;
+    lat: number;
+    lng: number;
+    radiusMeters: number;
+  }) => Promise<HostelAttendanceSession>;
+  rotateHostelSessionToken: (sessionId: string) => Promise<string>;
+  stopHostelAttendanceSession: (sessionId: string) => Promise<void>;
+  markResidentHostelAttendance: (payload: {
+    session: HostelAttendanceSession;
+    token: string;
+    markedVia: 'QR' | 'Manual';
+  }) => Promise<HostelAttendanceLog>;
   saveHostelAttendanceBatch: (
-    entries: { residentUid: string; residentName: string; roomNumber: string; status: HostelStatus }[]
+    entries: { residentUid: string; residentName: string; roomNumber: string; status: HostelStatus }[],
+    options?: { date?: string; sessionLabel?: string }
   ) => Promise<void>;
   allotResidentRoom: (residentUid: string, targetRoomId: string) => Promise<void>;
   createHostelRoom: (payload: {
@@ -1127,15 +1144,199 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [currentUser, dataMode, mutateDemoState, state.hostelMenus]
   );
 
+  const startHostelAttendanceSession = useCallback(
+    async (payload: {
+      hostelType: HostelType;
+      sessionLabel: string;
+      lat: number;
+      lng: number;
+      radiusMeters: number;
+    }): Promise<HostelAttendanceSession> => {
+      if (!currentUser || (!currentUser.isWarden && currentUser.role !== 'management')) {
+        throw new Error('Only a Hostel Warden or Management can start hostel roll-call attendance.');
+      }
+      const wardenHostel = currentUser.isWarden && currentUser.role !== 'management'
+        ? getUserHostelType(currentUser)
+        : null;
+      const targetWing = wardenHostel || payload.hostelType;
+      if (wardenHostel && payload.hostelType !== wardenHostel) {
+        throw new Error(`${wardenHostel} Warden can only take attendance for ${wardenHostel}.`);
+      }
+
+      const now = Date.now();
+      const todayStr = getTodayIso();
+      const session: HostelAttendanceSession = {
+        id: `hsess-${now}`,
+        wardenUid: currentUser.uid,
+        wardenName: currentUser.name,
+        hostelType: targetWing,
+        sessionLabel: (payload.sessionLabel || 'Night Roll Call').trim().slice(0, 60),
+        date: todayStr,
+        currentToken: generateToken(),
+        tokenIssuedAt: now,
+        expiresAt: now + 30000,
+        campusLat: payload.lat,
+        campusLng: payload.lng,
+        radiusMeters: Math.min(1000, Math.max(50, Number(payload.radiusMeters) || 250)),
+        active: true,
+      };
+
+      if (dataMode === 'firebase') {
+        const prevActive = state.hostelAttendanceSessions.filter(
+          (s) => s.active && s.hostelType === targetWing
+        );
+        await Promise.all(
+          prevActive.map((s) => fbUpdateDoc('hostelAttendanceSessions', s.id, { active: false }))
+        );
+        await fbSetDoc('hostelAttendanceSessions', session.id, session);
+      } else {
+        mutateDemoState((prev) => ({
+          ...prev,
+          hostelAttendanceSessions: [
+            session,
+            ...prev.hostelAttendanceSessions.map((s) =>
+              s.hostelType === targetWing ? { ...s, active: false } : s
+            ),
+          ],
+        }));
+      }
+      return session;
+    },
+    [currentUser, dataMode, mutateDemoState, state.hostelAttendanceSessions]
+  );
+
+  const rotateHostelSessionToken = useCallback(
+    async (sessionId: string): Promise<string> => {
+      const nextToken = generateToken();
+      const now = Date.now();
+      const patch = {
+        currentToken: nextToken,
+        tokenIssuedAt: now,
+        expiresAt: now + 30000,
+      };
+      if (dataMode === 'firebase') {
+        await fbUpdateDoc('hostelAttendanceSessions', sessionId, patch);
+      } else {
+        mutateDemoState((prev) => ({
+          ...prev,
+          hostelAttendanceSessions: prev.hostelAttendanceSessions.map((s) =>
+            s.id === sessionId ? { ...s, ...patch } : s
+          ),
+        }));
+      }
+      return nextToken;
+    },
+    [dataMode, mutateDemoState]
+  );
+
+  const stopHostelAttendanceSession = useCallback(
+    async (sessionId: string) => {
+      if (dataMode === 'firebase') {
+        await fbUpdateDoc('hostelAttendanceSessions', sessionId, { active: false });
+      } else {
+        mutateDemoState((prev) => ({
+          ...prev,
+          hostelAttendanceSessions: prev.hostelAttendanceSessions.map((s) =>
+            s.id === sessionId ? { ...s, active: false } : s
+          ),
+        }));
+      }
+    },
+    [dataMode, mutateDemoState]
+  );
+
+  const markResidentHostelAttendance = useCallback(
+    async (payload: {
+      session: HostelAttendanceSession;
+      token: string;
+      markedVia: 'QR' | 'Manual';
+    }): Promise<HostelAttendanceLog> => {
+      if (!currentUser || !currentUser.isHostel || currentUser.active === false) {
+        throw new Error('Only active Hostel Residents can mark hostel roll-call attendance.');
+      }
+      const residentWing = getUserHostelType(currentUser);
+      if (!residentWing || residentWing !== payload.session.hostelType) {
+        throw new Error(
+          `This session is strictly for ${payload.session.hostelType}. You are registered in ${
+            residentWing || 'another wing'
+          }.`
+        );
+      }
+      const { session, token, markedVia } = payload;
+      if (!session.active) {
+        throw new Error('This hostel roll-call session has already ended.');
+      }
+      const normalizedInput = token.trim().toUpperCase();
+      const normalizedExpected = session.currentToken.trim().toUpperCase();
+      const expectedDigits = normalizedExpected.replace(/^PSNA-/, '');
+      if (normalizedInput !== normalizedExpected && normalizedInput !== expectedDigits) {
+        throw new Error(
+          'Invalid or expired roll-call code. Scan the latest 30-second QR code from your Warden.'
+        );
+      }
+      if (Date.now() > session.expiresAt + 5000 && dataMode === 'firebase') {
+        throw new Error('This 30-second hostel QR token has expired. Scan the refreshed QR code.');
+      }
+
+      const existing = state.hostelAttendanceLogs.find(
+        (l) => l.sessionId === session.id && l.residentUid === currentUser.uid
+      );
+      if (existing) {
+        return existing;
+      }
+
+      const todayStr = session.date || getTodayIso();
+      const safeSessionPart = session.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+      const safeUidPart = currentUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+      const logId = `hlog-${safeSessionPart}-${safeUidPart}`.slice(0, 128);
+      const log: HostelAttendanceLog = {
+        id: logId,
+        date: todayStr,
+        residentUid: currentUser.uid,
+        residentName: currentUser.name,
+        roomNumber: currentUser.roomNumber || 'Unassigned',
+        hostelType: residentWing,
+        status: 'In',
+        markedByUid: currentUser.uid,
+        sessionId: session.id,
+        sessionLabel: session.sessionLabel,
+        markedVia,
+        markedAt: new Date().toISOString(),
+      };
+
+      if (dataMode === 'firebase') {
+        await fbSetDoc('hostelAttendanceLogs', logId, log);
+        await fbUpdateDoc('users', currentUser.uid, { hostelStatus: 'In' });
+      } else {
+        mutateDemoState((prev) => {
+          const filtered = prev.hostelAttendanceLogs.filter((l) => l.id !== logId);
+          return {
+            ...prev,
+            hostelAttendanceLogs: [log, ...filtered],
+            users: prev.users.map((u) =>
+              u.uid === currentUser.uid ? { ...u, hostelStatus: 'In' } : u
+            ),
+          };
+        });
+        setCurrentUser((prev) => (prev ? { ...prev, hostelStatus: 'In' } : prev));
+      }
+      return log;
+    },
+    [currentUser, dataMode, mutateDemoState, state.hostelAttendanceLogs]
+  );
+
   const saveHostelAttendanceBatch = useCallback(
     async (
-      entries: { residentUid: string; residentName: string; roomNumber: string; status: HostelStatus }[]
+      entries: { residentUid: string; residentName: string; roomNumber: string; status: HostelStatus }[],
+      options?: { date?: string; sessionLabel?: string }
     ) => {
       if (!currentUser || (!currentUser.isWarden && currentUser.role !== 'management')) {
         throw new Error('Only the Warden or Management can save hostel attendance.');
       }
       const wardenHostel = currentUser.isWarden ? getUserHostelType(currentUser) : null;
-      const todayStr = getTodayIso();
+      const targetDate = (options?.date || getTodayIso()).trim().slice(0, 20);
+      const sessionLabel = (options?.sessionLabel || 'Daily Roll Call').trim().slice(0, 60);
+      const nowIso = new Date().toISOString();
       const newLogs: HostelAttendanceLog[] = entries.map((e) => {
         const resUser = state.users.find((u) => u.uid === e.residentUid);
         const resHostel = getUserHostelType(resUser) || wardenHostel || 'Boys Hostel';
@@ -1145,24 +1346,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           );
         }
         return {
-          id: `hlog-${todayStr}-${e.residentUid}`,
-          date: todayStr,
+          id: `hlog-${targetDate}-${e.residentUid}`.slice(0, 128),
+          date: targetDate,
           residentUid: e.residentUid,
           residentName: e.residentName,
           roomNumber: e.roomNumber,
           hostelType: resHostel,
           status: e.status,
           markedByUid: currentUser.uid,
+          sessionLabel,
+          markedVia: 'Warden',
+          markedAt: nowIso,
         };
       });
+
+      const isToday = targetDate === getTodayIso();
 
       if (dataMode === 'firebase') {
         await Promise.all(
           newLogs.map((log) => fbSetDoc('hostelAttendanceLogs', log.id, log))
         );
-        await Promise.all(
-          entries.map((e) => fbUpdateDoc('users', e.residentUid, { hostelStatus: e.status }))
-        );
+        if (isToday) {
+          await Promise.all(
+            entries.map((e) => fbUpdateDoc('users', e.residentUid, { hostelStatus: e.status }))
+          );
+        }
       } else {
         mutateDemoState((prev) => {
           const map = new Map(prev.hostelAttendanceLogs.map((l) => [l.id, l]));
@@ -1171,9 +1379,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return {
             ...prev,
             hostelAttendanceLogs: Array.from(map.values()),
-            users: prev.users.map((u) =>
-              statusMap.has(u.uid) ? { ...u, hostelStatus: statusMap.get(u.uid) } : u
-            ),
+            users: isToday
+              ? prev.users.map((u) =>
+                  statusMap.has(u.uid) ? { ...u, hostelStatus: statusMap.get(u.uid) } : u
+                )
+              : prev.users,
           };
         });
       }
@@ -2492,8 +2702,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             (isWarden && r.targetQueue === 'warden' && r.targetHostelType === wardenHostel)
         );
 
+    const scopedHostelRooms = !currentUser
+      ? []
+      : state.hostelRooms.filter((r) => canUserAccessHostelType(currentUser, r.hostelType));
+
+    const scopedHostelSessions = !currentUser
+      ? []
+      : state.hostelAttendanceSessions.filter((s) =>
+          canUserAccessHostelType(currentUser, s.hostelType)
+        );
+
+    const scopedHostelLogs = !currentUser
+      ? []
+      : isMgmt
+      ? state.hostelAttendanceLogs
+      : isWarden && wardenHostel
+      ? state.hostelAttendanceLogs.filter((l) => l.hostelType === wardenHostel)
+      : currentUser.isHostel
+      ? state.hostelAttendanceLogs.filter((l) => l.residentUid === currentUser.uid)
+      : [];
+
     return {
       ...state,
+      hostelRooms: scopedHostelRooms,
+      hostelAttendanceSessions: scopedHostelSessions,
+      hostelAttendanceLogs: scopedHostelLogs,
       userPrivate: filterPrivateMapForRole(currentUser, state.userPrivate, state.users),
       masterRegistry: isMgmt ? state.masterRegistry : [],
       approvalRequests: scopedApprovals,
@@ -2535,6 +2768,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deleteTimetableSession,
     updateMyHostelStatus,
     updateHostelMenu,
+    startHostelAttendanceSession,
+    rotateHostelSessionToken,
+    stopHostelAttendanceSession,
+    markResidentHostelAttendance,
     saveHostelAttendanceBatch,
     allotResidentRoom,
     createHostelRoom,

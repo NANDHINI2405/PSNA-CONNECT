@@ -36,6 +36,7 @@ import {
   SEED_DOCUMENTS,
   SEED_EVENTS,
   SEED_HOSTEL_ATTENDANCE_LOGS,
+  SEED_HOSTEL_ATTENDANCE_SESSIONS,
   SEED_HOSTEL_MENUS,
   SEED_HOSTEL_ROOMS,
   SEED_MAILS,
@@ -64,6 +65,7 @@ import {
   ChatThread,
   DayOfWeek,
   HostelAttendanceLog,
+  HostelAttendanceSession,
   HostelMenu,
   HostelRoom,
   HostelStatus,
@@ -92,6 +94,7 @@ export interface AppDataState {
   staffCheckins: StaffCheckin[];
   hostelRooms: HostelRoom[];
   hostelMenus: HostelMenu[];
+  hostelAttendanceSessions: HostelAttendanceSession[];
   hostelAttendanceLogs: HostelAttendanceLog[];
   canteenItems: CanteenItem[];
   canteenOrders: CanteenOrder[];
@@ -128,6 +131,7 @@ function buildInitialState(): AppDataState {
     staffCheckins: SEED_STAFF_CHECKINS,
     hostelRooms: SEED_HOSTEL_ROOMS,
     hostelMenus: SEED_HOSTEL_MENUS,
+    hostelAttendanceSessions: SEED_HOSTEL_ATTENDANCE_SESSIONS,
     hostelAttendanceLogs: SEED_HOSTEL_ATTENDANCE_LOGS,
     canteenItems: SEED_CANTEEN_ITEMS,
     canteenOrders: SEED_CANTEEN_ORDERS,
@@ -164,6 +168,8 @@ export function loadLocalState(): AppDataState {
       approvalRequests: parsed.approvalRequests ?? init.approvalRequests,
       auditLogs: parsed.auditLogs ?? init.auditLogs,
       timetableSessions: parsed.timetableSessions ?? init.timetableSessions,
+      hostelAttendanceSessions:
+        parsed.hostelAttendanceSessions ?? init.hostelAttendanceSessions,
     };
   } catch {
     return buildInitialState();
@@ -525,6 +531,9 @@ export async function seedFirestoreWithDummyData(currentUser: UserProfile): Prom
   for (const m of SEED_HOSTEL_MENUS) {
     batch.set(doc(db, 'hostelMenus', m.day), m);
   }
+  for (const hsess of SEED_HOSTEL_ATTENDANCE_SESSIONS) {
+    batch.set(doc(db, 'hostelAttendanceSessions', hsess.id), hsess);
+  }
   for (const log of SEED_HOSTEL_ATTENDANCE_LOGS) {
     batch.set(doc(db, 'hostelAttendanceLogs', log.id), log);
   }
@@ -718,14 +727,27 @@ export function subscribeFirestoreState(
     }
     watchCol<HostelMenu>('hostelMenus', 'hostelMenus');
     if (currentUser.role === 'management') {
+      watchCol<HostelAttendanceSession>('hostelAttendanceSessions', 'hostelAttendanceSessions');
       watchCol<HostelAttendanceLog>('hostelAttendanceLogs', 'hostelAttendanceLogs');
     } else if (currentUser.isWarden && myHostelType) {
+      watchCol<HostelAttendanceSession>(
+        'hostelAttendanceSessions',
+        'hostelAttendanceSessions',
+        query(collection(db, 'hostelAttendanceSessions'), where('hostelType', '==', myHostelType))
+      );
       watchCol<HostelAttendanceLog>(
         'hostelAttendanceLogs',
         'hostelAttendanceLogs',
         query(collection(db, 'hostelAttendanceLogs'), where('hostelType', '==', myHostelType))
       );
     } else {
+      if (myHostelType) {
+        watchCol<HostelAttendanceSession>(
+          'hostelAttendanceSessions',
+          'hostelAttendanceSessions',
+          query(collection(db, 'hostelAttendanceSessions'), where('hostelType', '==', myHostelType))
+        );
+      }
       watchCol<HostelAttendanceLog>(
         'hostelAttendanceLogs',
         'hostelAttendanceLogs',

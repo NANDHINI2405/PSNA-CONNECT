@@ -173,10 +173,10 @@ export function DashboardView() {
         ];
       case 'management':
         return [
-          { screen: 'management', title: 'Management Overview', subtitle: 'Users, roles & campus tables', icon: Building2 },
-          { screen: 'canteen', title: 'Canteen Console', subtitle: 'Live orders & menu items', icon: Coffee },
+          { screen: 'management', title: 'Management Overview', subtitle: 'Users, roles & timetable', icon: Building2 },
+          { screen: 'audit', title: 'Audit Log', subtitle: 'Role & record history', icon: ClipboardList },
+          { screen: 'hostel', title: 'Hostel & Roll Call', subtitle: 'QR attendance, rooms & menu', icon: Home },
           { screen: 'notices', title: 'Notices & Events', subtitle: 'Campus-wide circulars', icon: Bell },
-          { screen: 'documents', title: 'Circular Archive', subtitle: 'Upload official PDFs', icon: FileText },
         ];
     }
   })();
@@ -538,15 +538,19 @@ export function DashboardView() {
                 : currentUser.className || 'Your Class'}
             </span>
           </div>
-          <button
-            type="button"
-            onClick={() =>
-              setActiveScreen(effectiveRole === 'management' ? 'management' : 'attendance')
-            }
-            className="text-xs font-medium text-blue-600 hover:text-blue-700"
-          >
-            {effectiveRole === 'management' ? 'Manage timetable' : 'Open full timetable & QR'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setActiveScreen(effectiveRole === 'management' ? 'management' : 'attendance')
+              }
+              className="text-xs font-medium text-blue-600 hover:text-blue-700"
+            >
+              {effectiveRole === 'management'
+                ? 'Manage in Overview'
+                : 'Open in Attendance'}
+            </button>
+          </div>
         </div>
 
         {todaysTimetable.length === 0 ? (
@@ -715,16 +719,34 @@ export function DashboardView() {
             >
               <div className="text-xs font-semibold text-blue-700 flex items-center gap-1">
                 <Plus className="w-3.5 h-3.5" />
-                <span>Rooms, Mess Menu &amp; Medical</span>
+                <span>Hostel Attendance, Rooms &amp; Medical</span>
               </div>
               <div className="text-xs text-slate-600 mt-1">
-                Open Hostel to add rooms, edit resident guardian/medical info, or update daily mess menus.
+                Open Hostel to launch live QR roll-call or manual attendance, add rooms, or edit mess menus.
               </div>
             </button>
           )}
 
           {(effectiveRole === 'staff' || effectiveRole === 'warden' || effectiveRole === 'management') && (
             <>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveScreen(effectiveRole === 'management' ? 'management' : 'attendance')
+                }
+                className="p-3.5 rounded-xl border border-slate-200 hover:border-blue-300 text-left transition-colors"
+              >
+                <div className="text-xs font-semibold text-blue-700 flex items-center gap-1">
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Class Timetable Periods</span>
+                </div>
+                <div className="text-xs text-slate-600 mt-1">
+                  {effectiveRole === 'management'
+                    ? 'Open Management Overview → Class Timetable to add or edit department periods.'
+                    : 'Open Attendance → Class Timetable to add periods or launch live QR attendance.'}
+                </div>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setActiveScreen('notices')}
@@ -767,22 +789,6 @@ export function DashboardView() {
                 </div>
               </button>
             </>
-          )}
-
-          {(effectiveRole === 'staff' || effectiveRole === 'warden') && (
-            <button
-              type="button"
-              onClick={() => setActiveScreen('attendance')}
-              className="p-3.5 rounded-xl border border-slate-200 hover:border-blue-300 text-left transition-colors"
-            >
-              <div className="text-xs font-semibold text-blue-700 flex items-center gap-1">
-                <Plus className="w-3.5 h-3.5" />
-                <span>Class Timetable &amp; Live QR</span>
-              </div>
-              <div className="text-xs text-slate-600 mt-1">
-                Open Attendance → Class Timetable to add periods or launch 1-click live QR attendance.
-              </div>
-            </button>
           )}
 
           <button

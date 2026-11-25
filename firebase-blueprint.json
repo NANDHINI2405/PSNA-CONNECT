@@ -214,9 +214,30 @@
       },
       "required": ["day", "breakfast", "lunch", "snacks", "dinner"]
     },
+    "HostelAttendanceSession": {
+      "title": "HostelAttendanceSession",
+      "description": "Wing-scoped rotating 30-second QR roll-call session started by a Hostel Warden or Management.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "wardenUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "wardenName": { "type": "string", "maxLength": 100 },
+        "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
+        "sessionLabel": { "type": "string", "maxLength": 60 },
+        "date": { "type": "string", "maxLength": 20 },
+        "currentToken": { "type": "string", "maxLength": 64 },
+        "tokenIssuedAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "campusLat": { "type": "number" },
+        "campusLng": { "type": "number" },
+        "radiusMeters": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "wardenUid", "hostelType", "sessionLabel", "date", "currentToken", "active"]
+    },
     "HostelAttendanceLog": {
       "title": "HostelAttendanceLog",
-      "description": "Daily hostel attendance status per resident.",
+      "description": "Daily hostel attendance and QR roll-call status per resident.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -226,7 +247,11 @@
         "roomNumber": { "type": "string", "maxLength": 16 },
         "hostelType": { "type": "string", "enum": ["Boys Hostel", "Girls Hostel"] },
         "status": { "type": "string", "enum": ["In", "Out", "Leave"] },
-        "markedByUid": { "type": "string", "maxLength": 128 }
+        "markedByUid": { "type": "string", "maxLength": 128 },
+        "sessionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sessionLabel": { "type": "string", "maxLength": 60 },
+        "markedVia": { "type": "string", "enum": ["Warden", "QR", "Manual"] },
+        "markedAt": { "type": "string", "maxLength": 40 }
       },
       "required": ["id", "date", "residentUid", "status"]
     },
@@ -429,9 +454,13 @@
       "schema": { "$ref": "#/entities/HostelMenu" },
       "description": "Weekly hostel menu and meal readiness."
     },
+    "/hostelAttendanceSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/HostelAttendanceSession" },
+      "description": "Active rotating QR roll-call sessions scoped by hostel wing."
+    },
     "/hostelAttendanceLogs/{logId}": {
       "schema": { "$ref": "#/entities/HostelAttendanceLog" },
-      "description": "Daily hostel attendance logs."
+      "description": "Daily hostel attendance and roll-call logs."
     },
     "/canteenItems/{itemId}": {
       "schema": { "$ref": "#/entities/CanteenItem" },

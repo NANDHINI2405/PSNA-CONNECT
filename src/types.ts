@@ -215,6 +215,22 @@ export interface HostelMenu {
   updatedAt?: string;
 }
 
+export interface HostelAttendanceSession {
+  id: string;
+  wardenUid: string;
+  wardenName: string;
+  hostelType: HostelType;
+  sessionLabel: string;
+  date: string;
+  currentToken: string;
+  tokenIssuedAt: number;
+  expiresAt: number;
+  campusLat: number;
+  campusLng: number;
+  radiusMeters: number;
+  active: boolean;
+}
+
 export interface HostelAttendanceLog {
   id: string;
   date: string;
@@ -224,6 +240,10 @@ export interface HostelAttendanceLog {
   hostelType?: HostelType;
   status: HostelStatus;
   markedByUid: string;
+  sessionId?: string;
+  sessionLabel?: string;
+  markedVia?: 'Warden' | 'QR' | 'Manual';
+  markedAt?: string;
 }
 
 export interface CanteenItem {

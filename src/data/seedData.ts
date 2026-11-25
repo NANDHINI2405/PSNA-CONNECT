@@ -12,6 +12,7 @@ import {
   ChatThread,
   DayOfWeek,
   HostelAttendanceLog,
+  HostelAttendanceSession,
   HostelMenu,
   HostelRoom,
   MailMessage,
@@ -823,12 +824,45 @@ export const SEED_HOSTEL_MENUS: HostelMenu[] = DAYS.map((day, idx) => {
   };
 });
 
+export const SEED_HOSTEL_ATTENDANCE_SESSIONS: HostelAttendanceSession[] = [
+  {
+    id: `hsess-${todayStr}-boys-night`,
+    wardenUid: 'staff-warden',
+    wardenName: 'Dr. Karthikeyan R',
+    hostelType: 'Boys Hostel',
+    sessionLabel: 'Night Roll Call',
+    date: todayStr,
+    currentToken: 'PSNA-742910',
+    tokenIssuedAt: Date.now(),
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24,
+    campusLat: DEFAULT_CAMPUS_GEOFENCE.lat,
+    campusLng: DEFAULT_CAMPUS_GEOFENCE.lng,
+    radiusMeters: DEFAULT_CAMPUS_GEOFENCE.radiusMeters,
+    active: true,
+  },
+  {
+    id: `hsess-${todayStr}-girls-night`,
+    wardenUid: 'staff-warden-girls',
+    wardenName: 'Dr. Kavitha S',
+    hostelType: 'Girls Hostel',
+    sessionLabel: 'Night Roll Call',
+    date: todayStr,
+    currentToken: 'PSNA-839201',
+    tokenIssuedAt: Date.now(),
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24,
+    campusLat: DEFAULT_CAMPUS_GEOFENCE.lat,
+    campusLng: DEFAULT_CAMPUS_GEOFENCE.lng,
+    radiusMeters: DEFAULT_CAMPUS_GEOFENCE.radiusMeters,
+    active: true,
+  },
+];
+
 export const SEED_HOSTEL_ATTENDANCE_LOGS: HostelAttendanceLog[] = [
-  { id: `hlog-${todayStr}-stu-1`, date: todayStr, residentUid: 'stu-1', residentName: 'Sonali', roomNumber: 'M-101', hostelType: 'Girls Hostel', status: 'In', markedByUid: 'staff-warden-girls' },
-  { id: `hlog-${todayStr}-stu-2`, date: todayStr, residentUid: 'stu-2', residentName: 'Praveen Kumar V', roomNumber: 'K-201', hostelType: 'Boys Hostel', status: 'In', markedByUid: 'staff-warden' },
-  { id: `hlog-${todayStr}-stu-3`, date: todayStr, residentUid: 'stu-3', residentName: 'Harish Balaji T', roomNumber: 'K-202', hostelType: 'Boys Hostel', status: 'Out', markedByUid: 'staff-warden' },
-  { id: `hlog-${todayStr}-stu-4`, date: todayStr, residentUid: 'stu-4', residentName: 'Sathishwaran P', roomNumber: 'K-202', hostelType: 'Boys Hostel', status: 'In', markedByUid: 'staff-warden' },
-  { id: `hlog-${todayStr}-stu-5`, date: todayStr, residentUid: 'stu-5', residentName: 'Deepika Lakshmi N', roomNumber: 'M-104', hostelType: 'Girls Hostel', status: 'Leave', markedByUid: 'staff-warden-girls' },
+  { id: `hlog-${todayStr}-stu-1`, date: todayStr, residentUid: 'stu-1', residentName: 'Sonali', roomNumber: 'M-101', hostelType: 'Girls Hostel', status: 'In', markedByUid: 'staff-warden-girls', sessionLabel: 'Morning Roll Call', markedVia: 'Warden', markedAt: `${todayStr}T07:30:00Z` },
+  { id: `hlog-${todayStr}-stu-2`, date: todayStr, residentUid: 'stu-2', residentName: 'Praveen Kumar V', roomNumber: 'K-201', hostelType: 'Boys Hostel', status: 'In', markedByUid: 'staff-warden', sessionLabel: 'Morning Roll Call', markedVia: 'Warden', markedAt: `${todayStr}T07:30:00Z` },
+  { id: `hlog-${todayStr}-stu-3`, date: todayStr, residentUid: 'stu-3', residentName: 'Harish Balaji T', roomNumber: 'K-202', hostelType: 'Boys Hostel', status: 'Out', markedByUid: 'staff-warden', sessionLabel: 'Morning Roll Call', markedVia: 'Warden', markedAt: `${todayStr}T07:30:00Z` },
+  { id: `hlog-${todayStr}-stu-4`, date: todayStr, residentUid: 'stu-4', residentName: 'Sathishwaran P', roomNumber: 'K-202', hostelType: 'Boys Hostel', status: 'In', markedByUid: 'staff-warden', sessionLabel: 'Morning Roll Call', markedVia: 'Warden', markedAt: `${todayStr}T07:30:00Z` },
+  { id: `hlog-${todayStr}-stu-5`, date: todayStr, residentUid: 'stu-5', residentName: 'Deepika Lakshmi N', roomNumber: 'M-104', hostelType: 'Girls Hostel', status: 'Leave', markedByUid: 'staff-warden-girls', sessionLabel: 'Morning Roll Call', markedVia: 'Warden', markedAt: `${todayStr}T07:30:00Z` },
 ];
 
 export const SEED_CANTEEN_ITEMS: CanteenItem[] = [

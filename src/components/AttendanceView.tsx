@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import {
   AlertCircle,
@@ -8,6 +7,7 @@ import {
   Camera,
   CheckCircle2,
   Clock,
+  Home,
   ImageUp,
   MapPin,
   Pencil,
@@ -25,6 +25,7 @@ import { useApp } from '../context/AppContext';
 import { getTodayDayName, getTodayIso } from '../services/dataService';
 import { DayOfWeek, TimetableSession, canAccessScreen } from '../types';
 import { getBrowserLocation, haversineMeters } from '../utils/geo';
+import { BarcodeDetectorCtor, decodeCanvasQr } from '../utils/qr';
 
 const TIMETABLE_DAYS: DayOfWeek[] = [
   'Monday',
@@ -61,35 +62,6 @@ function getDefaultTimetableDay(): DayOfWeek {
   return today === 'Sunday' ? 'Monday' : today;
 }
 
-interface BrowserBarcodeDetector {
-  detect(source: ImageBitmapSource): Promise<Array<{ rawValue?: string }>>;
-}
-
-type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BrowserBarcodeDetector;
-
-function decodeCanvasQr(
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D,
-  source: CanvasImageSource,
-  srcWidth: number,
-  srcHeight: number
-): string | null {
-  const maxDim = 640;
-  const scale = srcWidth > maxDim ? maxDim / srcWidth : 1;
-  const targetW = Math.max(1, Math.round(srcWidth * scale));
-  const targetH = Math.max(1, Math.round(srcHeight * scale));
-  if (canvas.width !== targetW || canvas.height !== targetH) {
-    canvas.width = targetW;
-    canvas.height = targetH;
-  }
-  ctx.drawImage(source, 0, 0, targetW, targetH);
-  const imgData = ctx.getImageData(0, 0, targetW, targetH);
-  const code = jsQR(imgData.data, imgData.width, imgData.height, {
-    inversionAttempts: 'attemptBoth',
-  });
-  return code?.data || null;
-}
-
 export function AttendanceView() {
   const {
     currentUser,
@@ -101,6 +73,7 @@ export function AttendanceView() {
     checkInStaff,
     upsertTimetableSession,
     deleteTimetableSession,
+    setActiveScreen,
   } = useApp();
 
   if (!currentUser || !canAccessScreen(currentUser, 'attendance')) {
@@ -126,6 +99,7 @@ export function AttendanceView() {
         checkInStaff={checkInStaff}
         upsertTimetableSession={upsertTimetableSession}
         deleteTimetableSession={deleteTimetableSession}
+        setActiveScreen={setActiveScreen}
       />
     );
   }
@@ -135,6 +109,7 @@ export function AttendanceView() {
       currentUser={currentUser}
       state={state}
       markStudentAttendance={markStudentAttendance}
+      setActiveScreen={setActiveScreen}
     />
   );
 }
@@ -143,10 +118,12 @@ function StudentAttendancePanel({
   currentUser,
   state,
   markStudentAttendance,
+  setActiveScreen,
 }: {
   currentUser: NonNullable<ReturnType<typeof useApp>['currentUser']>;
   state: ReturnType<typeof useApp>['state'];
   markStudentAttendance: ReturnType<typeof useApp>['markStudentAttendance'];
+  setActiveScreen: ReturnType<typeof useApp>['setActiveScreen'];
 }) {
   const [tab, setTab] = useState<'summary' | 'timetable' | 'scan'>('summary');
   const [selectedDay, setSelectedDay] = useState<DayOfWeek | 'All'>(() => getDefaultTimetableDay());
@@ -407,13 +384,14 @@ function StudentAttendancePanel({
 
       let decoded = decodeCanvasQr(tempCanvas, ctx, img, img.naturalWidth, img.naturalHeight);
       if (!decoded && img.naturalWidth > 640) {
-        tempCanvas.width = img.naturalWidth;
-        tempCanvas.height = img.naturalHeight;
-        ctx.drawImage(img, 0, 0);
-        const fullData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-        decoded = jsQR(fullData.data, fullData.width, fullData.height, {
-          inversionAttempts: 'attemptBoth',
-        })?.data || null;
+        decoded = decodeCanvasQr(
+          tempCanvas,
+          ctx,
+          img,
+          img.naturalWidth,
+          img.naturalHeight,
+          img.naturalWidth
+        );
       }
 
       if (!decoded) {
@@ -537,34 +515,46 @@ function StudentAttendancePanel({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
-          <button
-            type="button"
-            onClick={() => setTab('summary')}
-            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              tab === 'summary' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            My Attendance
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('timetable')}
-            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              tab === 'timetable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Class Timetable
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('scan')}
-            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              tab === 'scan' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Scan Attendance
-          </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {currentUser.isHostel && (
+            <button
+              type="button"
+              onClick={() => setActiveScreen('hostel')}
+              className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <Home className="w-3.5 h-3.5" />
+              <span>Hostel Roll Call</span>
+            </button>
+          )}
+          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setTab('summary')}
+              className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                tab === 'summary' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              My Attendance
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('timetable')}
+              className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                tab === 'timetable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Class Timetable
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('scan')}
+              className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                tab === 'scan' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Scan Attendance
+            </button>
+          </div>
         </div>
       </section>
 
@@ -1010,6 +1000,7 @@ function StaffAttendancePanel({
   checkInStaff,
   upsertTimetableSession,
   deleteTimetableSession,
+  setActiveScreen,
 }: {
   currentUser: NonNullable<ReturnType<typeof useApp>['currentUser']>;
   state: ReturnType<typeof useApp>['state'];
@@ -1019,6 +1010,7 @@ function StaffAttendancePanel({
   checkInStaff: ReturnType<typeof useApp>['checkInStaff'];
   upsertTimetableSession: ReturnType<typeof useApp>['upsertTimetableSession'];
   deleteTimetableSession: ReturnType<typeof useApp>['deleteTimetableSession'];
+  setActiveScreen: ReturnType<typeof useApp>['setActiveScreen'];
 }) {
   const [tab, setTab] = useState<'qr' | 'timetable' | 'checkin'>('qr');
   const [selectedSubject, setSelectedSubject] = useState(SUBJECTS[0].code);
@@ -1331,34 +1323,46 @@ function StaffAttendancePanel({
           <p className="text-sm text-slate-600 mt-0.5">{currentUser.department}</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
-          <button
-            type="button"
-            onClick={() => setTab('qr')}
-            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              tab === 'qr' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Start Class Attendance
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('timetable')}
-            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              tab === 'timetable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Class Timetable
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('checkin')}
-            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              tab === 'checkin' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            My Staff Check-in
-          </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {currentUser.isWarden && (
+            <button
+              type="button"
+              onClick={() => setActiveScreen('hostel')}
+              className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <Home className="w-3.5 h-3.5" />
+              <span>Take Hostel Attendance</span>
+            </button>
+          )}
+          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setTab('qr')}
+              className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                tab === 'qr' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Start Class Attendance
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('timetable')}
+              className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                tab === 'timetable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Class Timetable
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('checkin')}
+              className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                tab === 'checkin' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              My Staff Check-in
+            </button>
+          </div>
         </div>
       </section>
 
