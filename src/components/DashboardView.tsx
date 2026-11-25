@@ -28,9 +28,7 @@ import {
   NavScreen,
   RequestStatus,
   getEffectiveRole,
-  getHostelTypeForGender,
   getRoleLabel,
-  getUserGender,
   getUserHostelType,
 } from '../types';
 
@@ -53,9 +51,7 @@ export function DashboardView() {
   const { currentUser, dataMode, state, visibleNotices, setActiveScreen, submitApprovalRequest } =
     useApp();
 
-  const [reqType, setReqType] = useState<ApprovalRequestType>(() =>
-    currentUser?.role === 'staff' ? 'warden' : currentUser?.isHostel ? 'staff' : 'hostel_resident'
-  );
+  const [reqType, setReqType] = useState<ApprovalRequestType>('warden');
   const [reqReason, setReqReason] = useState('');
   const [reqFeedback, setReqFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
@@ -236,17 +232,15 @@ export function DashboardView() {
         )}
       </section>
 
-      {currentUser.role !== 'management' && !currentUser.isWarden && (
+      {currentUser.role === 'staff' && !currentUser.isWarden && (
         <section className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
               <h3 className="text-base font-semibold text-slate-900">
-                Access &amp; Hostel Requests
+                Warden Access Request
               </h3>
               <p className="text-xs text-slate-600 mt-0.5">
-                Hostel resident requests go to your wing Warden (
-                {getHostelTypeForGender(getUserGender(currentUser))}); Staff and Warden requests go
-                to Management.
+                Staff requests for Hostel Warden access go to Management for review.
               </p>
             </div>
           </div>
@@ -291,14 +285,6 @@ export function DashboardView() {
                   onChange={(e) => setReqType(e.target.value as ApprovalRequestType)}
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-900"
                 >
-                  {currentUser.role === 'student' && !currentUser.isHostel && (
-                    <option value="hostel_resident">
-                      Hostel Resident ({getHostelTypeForGender(getUserGender(currentUser))} Warden)
-                    </option>
-                  )}
-                  {currentUser.role === 'student' && (
-                    <option value="staff">Staff / Faculty Access (Management)</option>
-                  )}
                   <option value="warden">Warden Access (Management)</option>
                 </select>
               </div>
