@@ -7,6 +7,7 @@ import {
   Camera,
   CheckCircle2,
   Clock,
+  ImageUp,
   MapPin,
   QrCode,
   RefreshCw,
@@ -17,6 +18,35 @@ import { SUBJECTS } from '../data/seedData';
 import { useApp } from '../context/AppContext';
 import { getTodayIso } from '../services/dataService';
 import { getBrowserLocation, haversineMeters } from '../utils/geo';
+
+interface BrowserBarcodeDetector {
+  detect(source: ImageBitmapSource): Promise<Array<{ rawValue?: string }>>;
+}
+
+type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BrowserBarcodeDetector;
+
+function decodeCanvasQr(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  srcWidth: number,
+  srcHeight: number
+): string | null {
+  const maxDim = 640;
+  const scale = srcWidth > maxDim ? maxDim / srcWidth : 1;
+  const targetW = Math.max(1, Math.round(srcWidth * scale));
+  const targetH = Math.max(1, Math.round(srcHeight * scale));
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  ctx.drawImage(source, 0, 0, targetW, targetH);
+  const imgData = ctx.getImageData(0, 0, targetW, targetH);
+  const code = jsQR(imgData.data, imgData.width, imgData.height, {
+    inversionAttempts: 'attemptBoth',
+  });
+  return code?.data || null;
+}
 
 export function AttendanceView() {
   const {
@@ -74,7 +104,13 @@ function StudentAttendancePanel({
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const verifyingRef = useRef(false);
+  const lastAttemptRef = useRef<{ payload: string; at: number }>({ payload: '', at: 0 });
+  const verifyFnRef = useRef<(rawInput: string, markedVia: 'QR' | 'Manual') => Promise<void>>(
+    async () => {}
+  );
 
   const myRecords = useMemo(
     () => state.attendanceRecords.filter((r) => r.studentUid === currentUser.uid),
@@ -121,12 +157,21 @@ function StudentAttendancePanel({
     return days;
   }, [myRecords]);
 
-  const activeSessions = state.attendanceSessions.filter((s) => s.active);
+  const activeSessions = useMemo(
+    () =>
+      state.attendanceSessions
+        .filter((s) => s.active)
+        .sort((a, b) => (b.tokenIssuedAt || 0) - (a.tokenIssuedAt || 0)),
+    [state.attendanceSessions]
+  );
 
   const stopCamera = () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
     setCameraActive(false);
   };
@@ -136,8 +181,10 @@ function StudentAttendancePanel({
   }, []);
 
   const verifyAndSubmitToken = async (rawInput: string, markedVia: 'QR' | 'Manual') => {
+    if (verifyingRef.current) return;
+    verifyingRef.current = true;
     setVerifying(true);
-    setScanStatus({ type: 'info', message: 'Verifying classroom location and QR token...' });
+    setScanStatus({ type: 'info', message: 'QR / token detected. Verifying classroom location...' });
 
     try {
       let token = rawInput.trim();
@@ -145,22 +192,46 @@ function StudentAttendancePanel({
       if (token.startsWith('{')) {
         try {
           const parsed = JSON.parse(token) as { sessionId?: string; token?: string };
-          if (parsed.token) token = parsed.token;
-          if (parsed.sessionId) targetSessionId = parsed.sessionId;
+          if (parsed.token) token = parsed.token.trim();
+          if (parsed.sessionId) targetSessionId = parsed.sessionId.trim();
         } catch {
           // treat as plain code
         }
       }
 
-      const matchingSession =
-        (targetSessionId
-          ? activeSessions.find((s) => s.id === targetSessionId)
-          : activeSessions.find(
-              (s) => s.currentToken.toUpperCase() === token.toUpperCase()
-            )) || activeSessions[0];
+      const normalizedToken = token.toUpperCase();
+      let matchingSession = targetSessionId
+        ? state.attendanceSessions.find((s) => s.id === targetSessionId)
+        : activeSessions.find((s) => {
+            const expected = s.currentToken.trim().toUpperCase();
+            return (
+              expected === normalizedToken ||
+              expected.replace(/^PSNA-/, '') === normalizedToken
+            );
+          });
+
+      if (!matchingSession && !targetSessionId) {
+        matchingSession = activeSessions[0];
+      }
 
       if (!matchingSession) {
         throw new Error('No active QR attendance session is currently running.');
+      }
+      if (!matchingSession.active) {
+        throw new Error(
+          `The QR session for ${matchingSession.subjectCode} (${matchingSession.subjectName}) has already ended.`
+        );
+      }
+
+      const alreadyMarked = myRecords.find((r) => r.sessionId === matchingSession.id);
+      if (alreadyMarked) {
+        setScanStatus({
+          type: 'success',
+          message: `Attendance already recorded Present for ${alreadyMarked.subjectCode} (${alreadyMarked.subjectName}).`,
+        });
+        setManualCode('');
+        stopCamera();
+        return;
       }
 
       // Check browser geolocation inside classroom radius
@@ -196,29 +267,86 @@ function StudentAttendancePanel({
         message: err instanceof Error ? err.message : 'Unable to mark attendance.',
       });
     } finally {
+      verifyingRef.current = false;
       setVerifying(false);
     }
   };
+
+  verifyFnRef.current = verifyAndSubmitToken;
 
   const startCamera = async () => {
     setCameraError(null);
     setScanStatus(null);
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError('Camera API is not available in this browser. Use the manual code entry below.');
+      setCameraError(
+        'Live camera streaming is unavailable in this browser/window. Use "Scan QR Image" or the Manual Code entry.'
+      );
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
       streamRef.current = stream;
+      lastAttemptRef.current = { payload: '', at: 0 };
       setCameraActive(true);
     } catch (err) {
       setCameraError(
         err instanceof Error
-          ? `Camera permission denied or unavailable (${err.message}). Use manual code entry below.`
-          : 'Camera permission denied. Use manual code entry below.'
+          ? `Camera permission denied or unavailable (${err.message}). Try "Scan QR Image" or Manual Code entry.`
+          : 'Camera permission denied. Try "Scan QR Image" or Manual Code entry.'
       );
+    }
+  };
+
+  const handleQrImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setCameraError(null);
+    setScanStatus({ type: 'info', message: 'Reading QR code from image...' });
+
+    try {
+      const objectUrl = URL.createObjectURL(file);
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Could not load the selected image.'));
+        el.src = objectUrl;
+      });
+      URL.revokeObjectURL(objectUrl);
+
+      const tempCanvas = document.createElement('canvas');
+      const ctx = tempCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas is unavailable in this browser.');
+
+      let decoded = decodeCanvasQr(tempCanvas, ctx, img, img.naturalWidth, img.naturalHeight);
+      if (!decoded && img.naturalWidth > 640) {
+        tempCanvas.width = img.naturalWidth;
+        tempCanvas.height = img.naturalHeight;
+        ctx.drawImage(img, 0, 0);
+        const fullData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+        decoded = jsQR(fullData.data, fullData.width, fullData.height, {
+          inversionAttempts: 'attemptBoth',
+        })?.data || null;
+      }
+
+      if (!decoded) {
+        throw new Error('No QR code detected in this image. Ensure the QR code is clear and well-lit.');
+      }
+      await verifyFnRef.current(decoded, 'QR');
+    } catch (err) {
+      setScanStatus({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Unable to decode QR image.',
+      });
     }
   };
 
@@ -226,6 +354,7 @@ function StudentAttendancePanel({
     if (!cameraActive) return;
     let rafId = 0;
     let cancelled = false;
+    let detectingNative = false;
 
     const video = videoRef.current;
     if (video && streamRef.current) {
@@ -233,26 +362,67 @@ function StudentAttendancePanel({
       video.play().catch(() => {});
     }
 
+    const BarcodeDetectorApi = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor })
+      .BarcodeDetector;
+    const detector = BarcodeDetectorApi
+      ? (() => {
+          try {
+            return new BarcodeDetectorApi({ formats: ['qr_code'] });
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+
+    const handleDetected = (raw: string) => {
+      const now = Date.now();
+      if (
+        verifyingRef.current ||
+        (lastAttemptRef.current.payload === raw && now - lastAttemptRef.current.at < 2500)
+      ) {
+        return;
+      }
+      lastAttemptRef.current = { payload: raw, at: now };
+      void verifyFnRef.current(raw, 'QR');
+    };
+
     const scanFrame = () => {
       if (cancelled) return;
       const vid = videoRef.current;
       const canvas = canvasRef.current;
-      if (vid && canvas && vid.readyState === vid.HAVE_ENOUGH_DATA) {
-        canvas.width = vid.videoWidth;
-        canvas.height = vid.videoHeight;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
-          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const code = jsQR(imgData.data, imgData.width, imgData.height, {
-            inversionAttempts: 'dontInvert',
-          });
-          if (code?.data && !verifying) {
-            verifyAndSubmitToken(code.data, 'QR');
-            return;
+
+      if (
+        vid &&
+        vid.readyState >= vid.HAVE_CURRENT_DATA &&
+        vid.videoWidth > 0 &&
+        vid.videoHeight > 0 &&
+        !verifyingRef.current
+      ) {
+        if (detector && !detectingNative) {
+          detectingNative = true;
+          detector
+            .detect(vid)
+            .then((codes) => {
+              const raw = codes.find((c) => c.rawValue)?.rawValue;
+              if (!cancelled && raw) handleDetected(raw);
+            })
+            .catch(() => {})
+            .finally(() => {
+              detectingNative = false;
+            });
+        }
+
+        if (canvas) {
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          if (ctx) {
+            const raw = decodeCanvasQr(canvas, ctx, vid, vid.videoWidth, vid.videoHeight);
+            if (raw) {
+              handleDetected(raw);
+            }
           }
         }
       }
+
       rafId = requestAnimationFrame(scanFrame);
     };
 
@@ -261,8 +431,7 @@ function StudentAttendancePanel({
       cancelled = true;
       cancelAnimationFrame(rafId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraActive, verifying]);
+  }, [cameraActive]);
 
   return (
     <div className="space-y-6">
@@ -386,30 +555,49 @@ function StudentAttendancePanel({
         /* Scan Attendance Tab */
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Camera className="w-5 h-5 text-blue-600" />
                 <h3 className="text-base font-semibold text-slate-900">Camera QR Scanner</h3>
               </div>
-              {cameraActive ? (
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleQrImageUpload}
+                  className="hidden"
+                />
                 <button
                   type="button"
-                  onClick={stopCamera}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-red-50 text-red-700 text-xs font-medium inline-flex items-center gap-1.5"
+                  disabled={verifying}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium inline-flex items-center gap-1.5"
                 >
-                  <StopCircle className="w-4 h-4" />
-                  <span>Stop Camera</span>
+                  <ImageUp className="w-4 h-4" />
+                  <span>Scan QR Image</span>
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={startCamera}
-                  className="min-h-[40px] px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium inline-flex items-center gap-1.5"
-                >
-                  <Camera className="w-4 h-4" />
-                  <span>Start Camera</span>
-                </button>
-              )}
+                {cameraActive ? (
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-red-50 text-red-700 text-xs font-medium inline-flex items-center gap-1.5"
+                  >
+                    <StopCircle className="w-4 h-4" />
+                    <span>Stop Camera</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    className="min-h-[40px] px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium inline-flex items-center gap-1.5"
+                  >
+                    <Camera className="w-4 h-4" />
+                    <span>Start Camera</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {cameraError && (
@@ -424,22 +612,51 @@ function StudentAttendancePanel({
                 <>
                   <video
                     ref={videoRef}
+                    autoPlay
                     playsInline
                     muted
                     className="w-full h-full object-cover"
                   />
                   <canvas ref={canvasRef} className="hidden" />
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                    <div className="w-44 h-44 sm:w-52 sm:h-52 rounded-2xl border-2 border-blue-400/90 shadow-[0_0_0_9999px_rgba(15,23,42,0.32)]" />
+                  </div>
+                  <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex justify-center">
+                    <span className="px-3 py-1 rounded-full bg-slate-900/80 text-white text-xs font-medium">
+                      {verifying ? 'Verifying QR & Location...' : 'Point camera at faculty QR code'}
+                    </span>
+                  </div>
                 </>
               ) : (
                 <div className="text-center text-slate-300 px-6">
                   <QrCode className="w-10 h-10 mx-auto mb-2 opacity-70" />
                   <p className="text-sm font-medium">Camera preview inactive</p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Click Start Camera to scan the 30-second QR code on your faculty screen, or use manual entry.
+                    Click Start Camera, tap Scan QR Image to snap a photo, or enter the manual code.
                   </p>
                 </div>
               )}
             </div>
+
+            {scanStatus && (
+              <div
+                role="status"
+                className={`p-3.5 rounded-xl border text-sm flex items-start gap-2.5 ${
+                  scanStatus.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : scanStatus.type === 'error'
+                    ? 'bg-red-50 border-red-200 text-red-900'
+                    : 'bg-blue-50 border-blue-200 text-blue-900'
+                }`}
+              >
+                {scanStatus.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                )}
+                <span>{scanStatus.message}</span>
+              </div>
+            )}
           </div>
 
           <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
@@ -561,13 +778,18 @@ function StaffAttendancePanel({
   const activeSession = state.attendanceSessions.find(
     (s) => s.active && s.staffUid === currentUser.uid
   );
+  const rotatingRef = useRef(false);
 
   // Rotate QR token every 30s
   useEffect(() => {
     if (!activeSession) {
       setQrDataUrl('');
+      rotatingRef.current = false;
       return;
     }
+
+    rotatingRef.current = false;
+    setSecondsLeft(Math.max(0, Math.ceil((activeSession.expiresAt - Date.now()) / 1000)));
 
     const updateQr = async () => {
       const payload = JSON.stringify({
@@ -586,21 +808,25 @@ function StaffAttendancePanel({
     const interval = setInterval(() => {
       const remaining = Math.max(0, Math.ceil((activeSession.expiresAt - Date.now()) / 1000));
       setSecondsLeft(remaining);
-      if (remaining <= 0) {
-        rotateSessionToken(activeSession.id).catch(() => {});
+      if (remaining <= 0 && !rotatingRef.current) {
+        rotatingRef.current = true;
+        rotateSessionToken(activeSession.id).catch(() => {
+          rotatingRef.current = false;
+        });
       }
     }, 1000);
 
     return () => clearInterval(interval);
   }, [activeSession, rotateSessionToken]);
 
-  const handleStartSession = async () => {
+  const handleStartSession = async (overrideMode?: 'gps' | 'campus') => {
+    const mode = overrideMode || locationMode;
     setSessionError(null);
     setStarting(true);
     try {
       let lat = state.geofence.lat;
       let lng = state.geofence.lng;
-      if (locationMode === 'gps') {
+      if (mode === 'gps') {
         const pos = await getBrowserLocation();
         lat = pos.lat;
         lng = pos.lng;
@@ -846,12 +1072,25 @@ function StaffAttendancePanel({
                   <button
                     type="button"
                     disabled={starting}
-                    onClick={handleStartSession}
+                    onClick={() => handleStartSession()}
                     className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors"
                   >
                     <QrCode className="w-4 h-4" />
                     <span>{starting ? 'Acquiring Classroom GPS...' : 'Start Live Attendance QR'}</span>
                   </button>
+                  {sessionError && locationMode === 'gps' && (
+                    <button
+                      type="button"
+                      disabled={starting}
+                      onClick={() => {
+                        setLocationMode('campus');
+                        void handleStartSession('campus');
+                      }}
+                      className="w-full min-h-[40px] px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium"
+                    >
+                      Use PSNA Main Block Coordinates Instead
+                    </button>
+                  )}
                 </div>
               </>
             ) : (

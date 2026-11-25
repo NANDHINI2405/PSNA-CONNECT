@@ -33,30 +33,44 @@ export function getBrowserLocation(): Promise<GeoPosition> {
       return;
     }
 
+    const formatError = (err: GeolocationPositionError) => {
+      if (err.code === err.PERMISSION_DENIED) {
+        return new Error(
+          'Location permission was denied. Please allow location access in your browser site settings to verify classroom presence.'
+        );
+      }
+      if (err.code === err.POSITION_UNAVAILABLE) {
+        return new Error('Location information is unavailable from your device GPS/network.');
+      }
+      if (err.code === err.TIMEOUT) {
+        return new Error('Location request timed out. Please try again.');
+      }
+      return new Error('Unable to retrieve your location.');
+    };
+
+    const onSuccess = (pos: GeolocationPosition) => {
+      resolve({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracy: Math.round(pos.coords.accuracy),
+      });
+    };
+
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: Math.round(pos.coords.accuracy),
-        });
-      },
+      onSuccess,
       (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          reject(
-            new Error(
-              'Location permission was denied. Please enable browser location access in site settings to verify you are inside the classroom/campus.'
-            )
+        // Retry with network/Wi-Fi accuracy when high-accuracy GPS times out or is unavailable indoors
+        if (err.code === err.POSITION_UNAVAILABLE || err.code === err.TIMEOUT) {
+          navigator.geolocation.getCurrentPosition(
+            onSuccess,
+            (fallbackErr) => reject(formatError(fallbackErr)),
+            { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
           );
-        } else if (err.code === err.POSITION_UNAVAILABLE) {
-          reject(new Error('Location information is unavailable from your device GPS/network.'));
-        } else if (err.code === err.TIMEOUT) {
-          reject(new Error('Location request timed out. Please try again in an open area.'));
-        } else {
-          reject(new Error('Unable to retrieve your location.'));
+          return;
         }
+        reject(formatError(err));
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+      { enableHighAccuracy: true, timeout: 7000, maximumAge: 15000 }
     );
   });
 }

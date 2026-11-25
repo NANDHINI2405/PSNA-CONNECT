@@ -548,6 +548,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         active: true,
       };
       if (dataMode === 'firebase') {
+        const prevActive = state.attendanceSessions.filter(
+          (s) => s.active && s.staffUid === currentUser.uid
+        );
+        await Promise.all(
+          prevActive.map((s) => fbUpdateDoc('attendanceSessions', s.id, { active: false }))
+        );
         await fbSetDoc('attendanceSessions', session.id, session);
       } else {
         mutateDemoState((prev) => ({
@@ -559,7 +565,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       return session;
     },
-    [currentUser, dataMode, mutateDemoState]
+    [currentUser, dataMode, mutateDemoState, state.attendanceSessions]
   );
 
   const rotateSessionToken = useCallback(
@@ -615,15 +621,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!session.active) {
         throw new Error('This attendance session is no longer active.');
       }
-      if (token.trim().toUpperCase() !== session.currentToken.toUpperCase()) {
+      const normalizedInput = token.trim().toUpperCase();
+      const normalizedExpected = session.currentToken.trim().toUpperCase();
+      const expectedDigits = normalizedExpected.replace(/^PSNA-/, '');
+      if (normalizedInput !== normalizedExpected && normalizedInput !== expectedDigits) {
         throw new Error('Invalid or expired QR token. Please scan the latest 30-second code on screen.');
       }
-      if (Date.now() > session.expiresAt + 3000) {
-        throw new Error('This 30-second QR token has expired. Wait for the refreshed code.');
+      // Enforce 30s expiry when live staff timer is running; allow small network/camera decode buffer
+      if (Date.now() > session.expiresAt + 5000 && dataMode === 'firebase') {
+        throw new Error('This 30-second QR token has expired. Scan the refreshed QR code.');
+      }
+
+      const existingForSession = state.attendanceRecords.find(
+        (r) => r.studentUid === currentUser.uid && r.sessionId === session.id
+      );
+      if (existingForSession) {
+        return existingForSession;
       }
 
       const todayStr = getTodayIso();
-      const recordId = `att-${todayStr}-${session.subjectCode}-${currentUser.uid}`;
+      const safeSessionPart = session.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+      const safeUidPart = currentUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+      const recordId = `att-${safeSessionPart}-${safeUidPart}`.slice(0, 128);
       const record: AttendanceRecord = {
         id: recordId,
         studentUid: currentUser.uid,
@@ -649,7 +668,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       return record;
     },
-    [currentUser, dataMode, mutateDemoState]
+    [currentUser, dataMode, mutateDemoState, state.attendanceRecords]
   );
 
   const checkInStaff = useCallback(
