@@ -3,21 +3,63 @@ import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import {
   AlertCircle,
+  BookOpen,
   Calendar,
   Camera,
   CheckCircle2,
   Clock,
   ImageUp,
   MapPin,
+  Pencil,
+  Play,
+  Plus,
   QrCode,
   RefreshCw,
+  ShieldAlert,
   StopCircle,
+  Trash2,
   UserCheck,
 } from 'lucide-react';
 import { SUBJECTS } from '../data/seedData';
 import { useApp } from '../context/AppContext';
-import { getTodayIso } from '../services/dataService';
+import { getTodayDayName, getTodayIso } from '../services/dataService';
+import { DayOfWeek, TimetableSession, canAccessScreen } from '../types';
 import { getBrowserLocation, haversineMeters } from '../utils/geo';
+
+const TIMETABLE_DAYS: DayOfWeek[] = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
+const DAY_ORDER: Record<DayOfWeek, number> = {
+  Monday: 1,
+  Tuesday: 2,
+  Wednesday: 3,
+  Thursday: 4,
+  Friday: 5,
+  Saturday: 6,
+  Sunday: 7,
+};
+
+const PERIOD_DEFAULT_TIMES: Record<number, { start: string; end: string }> = {
+  1: { start: '09:00 AM', end: '09:50 AM' },
+  2: { start: '09:55 AM', end: '10:45 AM' },
+  3: { start: '11:05 AM', end: '11:55 AM' },
+  4: { start: '12:00 PM', end: '12:50 PM' },
+  5: { start: '01:30 PM', end: '02:20 PM' },
+  6: { start: '02:25 PM', end: '03:15 PM' },
+  7: { start: '03:20 PM', end: '04:10 PM' },
+  8: { start: '04:15 PM', end: '05:00 PM' },
+};
+
+function getDefaultTimetableDay(): DayOfWeek {
+  const today = getTodayDayName();
+  return today === 'Sunday' ? 'Monday' : today;
+}
 
 interface BrowserBarcodeDetector {
   detect(source: ImageBitmapSource): Promise<Array<{ rawValue?: string }>>;
@@ -57,9 +99,21 @@ export function AttendanceView() {
     stopAttendanceSession,
     markStudentAttendance,
     checkInStaff,
+    upsertTimetableSession,
+    deleteTimetableSession,
   } = useApp();
 
-  if (!currentUser) return null;
+  if (!currentUser || !canAccessScreen(currentUser, 'attendance')) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center">
+        <ShieldAlert className="w-10 h-10 text-slate-400 mx-auto mb-3" />
+        <h2 className="text-lg font-semibold text-slate-900">Attendance Access Restricted</h2>
+        <p className="text-sm text-slate-600 mt-1">
+          Your current role does not have access to live QR attendance operations.
+        </p>
+      </div>
+    );
+  }
 
   if (currentUser.role === 'staff') {
     return (
@@ -70,6 +124,8 @@ export function AttendanceView() {
         rotateSessionToken={rotateSessionToken}
         stopAttendanceSession={stopAttendanceSession}
         checkInStaff={checkInStaff}
+        upsertTimetableSession={upsertTimetableSession}
+        deleteTimetableSession={deleteTimetableSession}
       />
     );
   }
@@ -92,7 +148,9 @@ function StudentAttendancePanel({
   state: ReturnType<typeof useApp>['state'];
   markStudentAttendance: ReturnType<typeof useApp>['markStudentAttendance'];
 }) {
-  const [tab, setTab] = useState<'summary' | 'scan'>('summary');
+  const [tab, setTab] = useState<'summary' | 'timetable' | 'scan'>('summary');
+  const [selectedDay, setSelectedDay] = useState<DayOfWeek | 'All'>(() => getDefaultTimetableDay());
+  const [timetableScope, setTimetableScope] = useState<'my_class' | 'all'>('my_class');
   const [manualCode, setManualCode] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -157,13 +215,33 @@ function StudentAttendancePanel({
     return days;
   }, [myRecords]);
 
-  const activeSessions = useMemo(
-    () =>
-      state.attendanceSessions
-        .filter((s) => s.active)
-        .sort((a, b) => (b.tokenIssuedAt || 0) - (a.tokenIssuedAt || 0)),
-    [state.attendanceSessions]
-  );
+  const activeSessions = useMemo(() => {
+    const myClass = (currentUser.className || '').trim().toLowerCase();
+    return state.attendanceSessions
+      .filter((s) => s.active)
+      .sort((a, b) => {
+        const aMatch = myClass && a.className.trim().toLowerCase() === myClass ? 1 : 0;
+        const bMatch = myClass && b.className.trim().toLowerCase() === myClass ? 1 : 0;
+        if (aMatch !== bMatch) return bMatch - aMatch;
+        return (b.tokenIssuedAt || 0) - (a.tokenIssuedAt || 0);
+      });
+  }, [state.attendanceSessions, currentUser.className]);
+
+  const filteredTimetable = useMemo(() => {
+    const myClass = (currentUser.className || '').trim().toLowerCase();
+    return state.timetableSessions
+      .filter((tt) => {
+        if (selectedDay !== 'All' && tt.day !== selectedDay) return false;
+        if (timetableScope === 'my_class' && myClass) {
+          return tt.className.trim().toLowerCase() === myClass;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const dayDiff = (DAY_ORDER[a.day] || 9) - (DAY_ORDER[b.day] || 9);
+        return dayDiff !== 0 ? dayDiff : a.period - b.period;
+      });
+  }, [state.timetableSessions, selectedDay, timetableScope, currentUser.className]);
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -441,7 +519,17 @@ function StudentAttendancePanel({
           <div className="text-xs font-medium text-blue-700">Student Academic Profile</div>
           <h2 className="text-xl font-semibold text-slate-900 mt-0.5">{currentUser.name}</h2>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600 mt-1">
-            <span className="font-mono tabular-nums">{currentUser.registerNumber || 'Reg. Pending'}</span>
+            <span className="font-mono tabular-nums">
+              {currentUser.rollNumber || currentUser.registerNumber || 'Roll No. Pending'}
+            </span>
+            {currentUser.programLevel && currentUser.academicYear && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>
+                  {currentUser.programLevel} · {currentUser.academicYear}
+                </span>
+              </>
+            )}
             <span aria-hidden="true">·</span>
             <span>{currentUser.className || 'III CSE A'}</span>
             <span aria-hidden="true">·</span>
@@ -449,7 +537,7 @@ function StudentAttendancePanel({
           </div>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
           <button
             type="button"
             onClick={() => setTab('summary')}
@@ -458,6 +546,15 @@ function StudentAttendancePanel({
             }`}
           >
             My Attendance
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('timetable')}
+            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+              tab === 'timetable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Class Timetable
           </button>
           <button
             type="button"
@@ -551,6 +648,139 @@ function StudentAttendancePanel({
             </div>
           </section>
         </>
+      ) : tab === 'timetable' ? (
+        /* Student Class Timetable Tab */
+        <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <BookOpen className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base font-semibold text-slate-900">Class Timetable Sessions</h3>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Daily period schedule and live QR attendance status for {currentUser.className || 'your class'}.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setTimetableScope('my_class')}
+                  className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium ${
+                    timetableScope === 'my_class' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+                  }`}
+                >
+                  My Class ({currentUser.className || 'All'})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimetableScope('all')}
+                  className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium ${
+                    timetableScope === 'all' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+                  }`}
+                >
+                  All Classes
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setSelectedDay('All')}
+              className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors ${
+                selectedDay === 'All'
+                  ? 'border-blue-600 bg-blue-50 text-blue-700'
+                  : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              All Days
+            </button>
+            {TIMETABLE_DAYS.map((day) => (
+              <button
+                key={day}
+                type="button"
+                onClick={() => setSelectedDay(day)}
+                className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors ${
+                  selectedDay === day
+                    ? 'border-blue-600 bg-blue-50 text-blue-700'
+                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {day}
+                {getTodayDayName() === day ? ' (Today)' : ''}
+              </button>
+            ))}
+          </div>
+
+          {filteredTimetable.length === 0 ? (
+            <div className="p-8 rounded-xl bg-slate-50 border border-slate-200 text-center text-sm text-slate-500">
+              No class timetable sessions scheduled for this filter. Try switching to All Days or All Classes.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {filteredTimetable.map((tt) => {
+                const liveSession = activeSessions.find(
+                  (s) =>
+                    s.subjectCode === tt.subjectCode &&
+                    s.className.trim().toLowerCase() === tt.className.trim().toLowerCase()
+                );
+                return (
+                  <div
+                    key={tt.id}
+                    className={`rounded-2xl border p-4 flex flex-col justify-between gap-3 ${
+                      liveSession ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-blue-700 tabular-nums">
+                          {tt.day} · Period {tt.period}
+                        </span>
+                        <span className="font-mono text-slate-500 tabular-nums">
+                          {tt.startTime} – {tt.endTime}
+                        </span>
+                      </div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        <span className="font-mono text-slate-700 mr-1.5">{tt.subjectCode}</span>
+                        {tt.subjectName}
+                      </div>
+                      <div className="text-xs text-slate-600 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                        <span>{tt.staffName}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{tt.className}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>Room {tt.room}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                      {liveSession ? (
+                        <>
+                          <span className="text-xs font-semibold text-emerald-700">
+                            QR Session Active ({liveSession.radiusMeters}m)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setTab('scan')}
+                            className="min-h-[34px] px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium inline-flex items-center gap-1.5"
+                          >
+                            <QrCode className="w-3.5 h-3.5" />
+                            <span>Scan QR</span>
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-xs text-slate-400">Scheduled Period</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       ) : (
         /* Scan Attendance Tab */
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -673,17 +903,46 @@ function StudentAttendancePanel({
 
             {activeSessions.length === 0 ? (
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-600">
-                No class attendance session is currently active. Switch to a Staff demo account to start a live session, or wait for faculty to open QR attendance.
+                No class attendance session is currently active. Check your{' '}
+                <button
+                  type="button"
+                  onClick={() => setTab('timetable')}
+                  className="font-medium text-blue-600 hover:underline"
+                >
+                  Class Timetable
+                </button>{' '}
+                or wait for faculty to start live QR attendance.
               </div>
             ) : (
-              <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1">
-                <div className="font-semibold">
-                  Active Session: {activeSessions[0].subjectCode} — {activeSessions[0].subjectName}
-                </div>
-                <div>
-                  Faculty: {activeSessions[0].staffName} · Class: {activeSessions[0].className} · Allowed radius:{' '}
-                  <span className="font-mono tabular-nums">{activeSessions[0].radiusMeters}m</span>
-                </div>
+              <div className="space-y-2">
+                {activeSessions.map((sess) => {
+                  const isMyClass =
+                    Boolean(currentUser.className) &&
+                    sess.className.trim().toLowerCase() === currentUser.className!.trim().toLowerCase();
+                  return (
+                    <div
+                      key={sess.id}
+                      className={`p-3.5 rounded-xl border text-xs space-y-1 ${
+                        isMyClass
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                          : 'bg-blue-50 border-blue-200 text-blue-900'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 font-semibold">
+                        <span>
+                          Active Session: {sess.subjectCode} — {sess.subjectName}
+                        </span>
+                        {isMyClass && (
+                          <span className="text-[11px] font-semibold text-emerald-700">Your Class</span>
+                        )}
+                      </div>
+                      <div>
+                        Faculty: {sess.staffName} · Class: {sess.className} · Allowed radius:{' '}
+                        <span className="font-mono tabular-nums">{sess.radiusMeters}m</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -749,6 +1008,8 @@ function StaffAttendancePanel({
   rotateSessionToken,
   stopAttendanceSession,
   checkInStaff,
+  upsertTimetableSession,
+  deleteTimetableSession,
 }: {
   currentUser: NonNullable<ReturnType<typeof useApp>['currentUser']>;
   state: ReturnType<typeof useApp>['state'];
@@ -756,18 +1017,38 @@ function StaffAttendancePanel({
   rotateSessionToken: ReturnType<typeof useApp>['rotateSessionToken'];
   stopAttendanceSession: ReturnType<typeof useApp>['stopAttendanceSession'];
   checkInStaff: ReturnType<typeof useApp>['checkInStaff'];
+  upsertTimetableSession: ReturnType<typeof useApp>['upsertTimetableSession'];
+  deleteTimetableSession: ReturnType<typeof useApp>['deleteTimetableSession'];
 }) {
-  const [tab, setTab] = useState<'qr' | 'checkin'>('qr');
+  const [tab, setTab] = useState<'qr' | 'timetable' | 'checkin'>('qr');
   const [selectedSubject, setSelectedSubject] = useState(SUBJECTS[0].code);
   const [customSubCode, setCustomSubCode] = useState('');
   const [customSubName, setCustomSubName] = useState('');
-  const [className, setClassName] = useState('III CSE A');
+  const [className, setClassName] = useState('ME CSE Year 1');
   const [locationMode, setLocationMode] = useState<'gps' | 'campus'>('gps');
   const [radiusMeters, setRadiusMeters] = useState(250);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [secondsLeft, setSecondsLeft] = useState<number>(30);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+
+  // Staff Timetable state
+  const [ttDayFilter, setTtDayFilter] = useState<DayOfWeek | 'All'>(() => getDefaultTimetableDay());
+  const [ttScope, setTtScope] = useState<'mine' | 'all'>('mine');
+  const [showTtForm, setShowTtForm] = useState(false);
+  const [editingTtId, setEditingTtId] = useState<string | null>(null);
+  const [ttDay, setTtDay] = useState<DayOfWeek>(() => getDefaultTimetableDay());
+  const [ttPeriod, setTtPeriod] = useState<number>(1);
+  const [ttStartTime, setTtStartTime] = useState('09:00 AM');
+  const [ttEndTime, setTtEndTime] = useState('09:50 AM');
+  const [ttSubjChoice, setTtSubjChoice] = useState(SUBJECTS[0].code);
+  const [ttCustomCode, setTtCustomCode] = useState('');
+  const [ttCustomName, setTtCustomName] = useState('');
+  const [ttClassName, setTtClassName] = useState('ME CSE Year 1');
+  const [ttRoom, setTtRoom] = useState('PG-102');
+  const [ttRadius, setTtRadius] = useState(250);
+  const [ttMessage, setTtMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [savingTt, setSavingTt] = useState(false);
 
   const [checkinStatus, setCheckinStatus] = useState<{
     type: 'success' | 'error';
@@ -856,6 +1137,147 @@ function StaffAttendancePanel({
     }
   };
 
+  const handleStartFromTimetable = async (tt: TimetableSession) => {
+    setSessionError(null);
+    setTtMessage(null);
+    setStarting(true);
+    setClassName(tt.className);
+    setRadiusMeters(tt.radiusMeters || 250);
+    if (SUBJECTS.some((s) => s.code === tt.subjectCode)) {
+      setSelectedSubject(tt.subjectCode);
+    } else {
+      setSelectedSubject('__custom__');
+      setCustomSubCode(tt.subjectCode);
+      setCustomSubName(tt.subjectName);
+    }
+    setTab('qr');
+    try {
+      let lat = state.geofence.lat;
+      let lng = state.geofence.lng;
+      if (locationMode === 'gps') {
+        try {
+          const pos = await getBrowserLocation();
+          lat = pos.lat;
+          lng = pos.lng;
+        } catch {
+          // Fall back to campus coordinates if browser GPS is blocked indoors
+        }
+      }
+      await startAttendanceSession({
+        subjectCode: tt.subjectCode,
+        subjectName: tt.subjectName,
+        className: tt.className,
+        lat,
+        lng,
+        radiusMeters: tt.radiusMeters || 250,
+      });
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : 'Could not start QR session.');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const resetTtForm = () => {
+    setEditingTtId(null);
+    setTtDay(getDefaultTimetableDay());
+    setTtPeriod(1);
+    setTtStartTime(PERIOD_DEFAULT_TIMES[1].start);
+    setTtEndTime(PERIOD_DEFAULT_TIMES[1].end);
+    setTtSubjChoice(SUBJECTS[0].code);
+    setTtCustomCode('');
+    setTtCustomName('');
+    setTtClassName('ME CSE Year 1');
+    setTtRoom('PG-102');
+    setTtRadius(250);
+  };
+
+  const openEditTtForm = (tt: TimetableSession) => {
+    setEditingTtId(tt.id);
+    setTtDay(tt.day);
+    setTtPeriod(tt.period);
+    setTtStartTime(tt.startTime);
+    setTtEndTime(tt.endTime);
+    if (SUBJECTS.some((s) => s.code === tt.subjectCode)) {
+      setTtSubjChoice(tt.subjectCode);
+      setTtCustomCode('');
+      setTtCustomName('');
+    } else {
+      setTtSubjChoice('__custom__');
+      setTtCustomCode(tt.subjectCode);
+      setTtCustomName(tt.subjectName);
+    }
+    setTtClassName(tt.className);
+    setTtRoom(tt.room);
+    setTtRadius(tt.radiusMeters || 250);
+    setShowTtForm(true);
+    setTtMessage(null);
+  };
+
+  const handleSaveTimetable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTtMessage(null);
+    setSavingTt(true);
+    try {
+      const subj =
+        ttSubjChoice === '__custom__'
+          ? { code: ttCustomCode.trim().toUpperCase(), name: ttCustomName.trim() }
+          : SUBJECTS.find((s) => s.code === ttSubjChoice) || SUBJECTS[0];
+      await upsertTimetableSession({
+        id: editingTtId || undefined,
+        day: ttDay,
+        period: ttPeriod,
+        startTime: ttStartTime,
+        endTime: ttEndTime,
+        subjectCode: subj.code,
+        subjectName: subj.name,
+        className: ttClassName,
+        department: currentUser.department,
+        staffUid: currentUser.uid,
+        staffName: currentUser.name,
+        room: ttRoom,
+        radiusMeters: ttRadius,
+      });
+      setTtMessage({
+        type: 'success',
+        text: `${editingTtId ? 'Updated' : 'Added'} ${subj.code} (${ttClassName}) on ${ttDay} Period ${ttPeriod}.`,
+      });
+      resetTtForm();
+      setShowTtForm(false);
+    } catch (err) {
+      setTtMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to save timetable period.',
+      });
+    } finally {
+      setSavingTt(false);
+    }
+  };
+
+  const todayScheduleDay = getDefaultTimetableDay();
+  const todaysStaffClasses = useMemo(() => {
+    const mine = state.timetableSessions
+      .filter((t) => t.day === todayScheduleDay && t.staffUid === currentUser.uid)
+      .sort((a, b) => a.period - b.period);
+    if (mine.length > 0) return mine;
+    return state.timetableSessions
+      .filter((t) => t.day === todayScheduleDay && t.department === currentUser.department)
+      .sort((a, b) => a.period - b.period);
+  }, [state.timetableSessions, todayScheduleDay, currentUser.uid, currentUser.department]);
+
+  const filteredStaffTimetable = useMemo(() => {
+    return state.timetableSessions
+      .filter((t) => {
+        if (ttDayFilter !== 'All' && t.day !== ttDayFilter) return false;
+        if (ttScope === 'mine' && t.staffUid !== currentUser.uid) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const dayDiff = (DAY_ORDER[a.day] || 9) - (DAY_ORDER[b.day] || 9);
+        return dayDiff !== 0 ? dayDiff : a.period - b.period;
+      });
+  }, [state.timetableSessions, ttDayFilter, ttScope, currentUser.uid]);
+
   const handleStaffCheckIn = async () => {
     setCheckinStatus(null);
     setCheckingIn(true);
@@ -909,7 +1331,7 @@ function StaffAttendancePanel({
           <p className="text-sm text-slate-600 mt-0.5">{currentUser.department}</p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl self-start sm:self-auto">
           <button
             type="button"
             onClick={() => setTab('qr')}
@@ -918,6 +1340,15 @@ function StaffAttendancePanel({
             }`}
           >
             Start Class Attendance
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('timetable')}
+            className={`min-h-[40px] px-4 py-1.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+              tab === 'timetable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Class Timetable
           </button>
           <button
             type="button"
@@ -942,9 +1373,52 @@ function StaffAttendancePanel({
                     Launch 30-Second Rotating QR Session
                   </h3>
                   <p className="text-sm text-slate-600 mt-1">
-                    Students scan this QR code or enter the rotating code while inside the classroom radius.
+                    Pick a period from today&apos;s timetable or configure a custom session below.
                   </p>
                 </div>
+
+                {todaysStaffClasses.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-800">
+                        {todayScheduleDay}&apos;s Timetable Quick-Launch
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setTab('timetable')}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        Manage timetable
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {todaysStaffClasses.slice(0, 4).map((tt) => (
+                        <div
+                          key={tt.id}
+                          className="rounded-xl bg-white border border-slate-200 p-2.5 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-slate-900 truncate">
+                              P{tt.period} · {tt.subjectCode} · {tt.className}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate tabular-nums">
+                              {tt.startTime} · Room {tt.room}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={starting}
+                            onClick={() => handleStartFromTimetable(tt)}
+                            className="min-h-[32px] px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium inline-flex items-center gap-1 shrink-0"
+                          >
+                            <Play className="w-3 h-3" />
+                            <span>Start QR</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {sessionError && (
                   <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-sm text-red-800 flex items-start gap-2">
@@ -1193,6 +1667,387 @@ function StaffAttendancePanel({
               </div>
             )}
           </div>
+        </section>
+      ) : tab === 'timetable' ? (
+        /* Staff Class Timetable Tab */
+        <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <BookOpen className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base font-semibold text-slate-900">Faculty Class Timetable</h3>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Schedule weekly periods and start live 30-second QR attendance in one click.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setTtScope('mine')}
+                  className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium ${
+                    ttScope === 'mine' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+                  }`}
+                >
+                  My Classes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtScope('all')}
+                  className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium ${
+                    ttScope === 'all' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+                  }`}
+                >
+                  All Department
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showTtForm && !editingTtId) {
+                    setShowTtForm(false);
+                  } else {
+                    resetTtForm();
+                    setShowTtForm(true);
+                  }
+                }}
+                className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Timetable Period</span>
+              </button>
+            </div>
+          </div>
+
+          {ttMessage && (
+            <div
+              role="status"
+              className={`p-3.5 rounded-xl border text-sm flex items-center gap-2 ${
+                ttMessage.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-red-50 border-red-200 text-red-900'
+              }`}
+            >
+              {ttMessage.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              )}
+              <span>{ttMessage.text}</span>
+            </div>
+          )}
+
+          {showTtForm && (
+            <form
+              onSubmit={handleSaveTimetable}
+              className="rounded-xl border border-blue-200 bg-blue-50/40 p-5 space-y-4"
+            >
+              <div className="text-sm font-semibold text-slate-900">
+                {editingTtId ? 'Edit Timetable Period' : 'Add Timetable Period'}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Day</label>
+                  <select
+                    value={ttDay}
+                    onChange={(e) => setTtDay(e.target.value as DayOfWeek)}
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  >
+                    {TIMETABLE_DAYS.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Period</label>
+                  <select
+                    value={ttPeriod}
+                    onChange={(e) => {
+                      const p = Number(e.target.value);
+                      setTtPeriod(p);
+                      if (PERIOD_DEFAULT_TIMES[p]) {
+                        setTtStartTime(PERIOD_DEFAULT_TIMES[p].start);
+                        setTtEndTime(PERIOD_DEFAULT_TIMES[p].end);
+                      }
+                    }}
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  >
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map((p) => (
+                      <option key={p} value={p}>
+                        Period {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Start Time</label>
+                  <input
+                    type="text"
+                    required
+                    value={ttStartTime}
+                    onChange={(e) => setTtStartTime(e.target.value)}
+                    placeholder="09:00 AM"
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">End Time</label>
+                  <input
+                    type="text"
+                    required
+                    value={ttEndTime}
+                    onChange={(e) => setTtEndTime(e.target.value)}
+                    placeholder="09:50 AM"
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Subject</label>
+                  <select
+                    value={ttSubjChoice}
+                    onChange={(e) => setTtSubjChoice(e.target.value)}
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  >
+                    {SUBJECTS.map((s) => (
+                      <option key={s.code} value={s.code}>
+                        {s.code} — {s.name}
+                      </option>
+                    ))}
+                    <option value="__custom__">+ Custom Subject...</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Class</label>
+                  <input
+                    type="text"
+                    required
+                    list="psna-staff-tt-classes"
+                    value={ttClassName}
+                    onChange={(e) => setTtClassName(e.target.value)}
+                    placeholder="ME CSE Year 1"
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  />
+                  <datalist id="psna-staff-tt-classes">
+                    <option value="ME CSE Year 1" />
+                    <option value="III CSE A" />
+                    <option value="III ECE B" />
+                    <option value="III IT A" />
+                  </datalist>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Room / Lab</label>
+                  <input
+                    type="text"
+                    required
+                    value={ttRoom}
+                    onChange={(e) => setTtRoom(e.target.value)}
+                    placeholder="PG-102"
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  />
+                </div>
+
+                {ttSubjChoice === '__custom__' && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Custom Code
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={ttCustomCode}
+                        onChange={(e) => setTtCustomCode(e.target.value)}
+                        placeholder="CS3491"
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm font-mono uppercase"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Custom Subject Name
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={ttCustomName}
+                        onChange={(e) => setTtCustomName(e.target.value)}
+                        placeholder="Artificial Intelligence & ML"
+                        className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    QR Radius (m)
+                  </label>
+                  <select
+                    value={ttRadius}
+                    onChange={(e) => setTtRadius(Number(e.target.value))}
+                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm"
+                  >
+                    <option value={100}>100 meters</option>
+                    <option value={250}>250 meters</option>
+                    <option value={500}>500 meters</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetTtForm();
+                    setShowTtForm(false);
+                  }}
+                  className="min-h-[38px] px-4 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingTt}
+                  className="min-h-[38px] px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium"
+                >
+                  {savingTt ? 'Saving...' : editingTtId ? 'Update Period' : 'Save Period'}
+                </button>
+              </div>
+            </form>
+          )}
+
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setTtDayFilter('All')}
+              className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors ${
+                ttDayFilter === 'All'
+                  ? 'border-blue-600 bg-blue-50 text-blue-700'
+                  : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              All Days
+            </button>
+            {TIMETABLE_DAYS.map((day) => (
+              <button
+                key={day}
+                type="button"
+                onClick={() => setTtDayFilter(day)}
+                className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors ${
+                  ttDayFilter === day
+                    ? 'border-blue-600 bg-blue-50 text-blue-700'
+                    : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {day}
+                {getTodayDayName() === day ? ' (Today)' : ''}
+              </button>
+            ))}
+          </div>
+
+          {filteredStaffTimetable.length === 0 ? (
+            <div className="p-8 rounded-xl bg-slate-50 border border-slate-200 text-center text-sm text-slate-500">
+              No timetable periods found for this view. Click Add Timetable Period or switch to All Department.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs text-slate-500">
+                    <th className="py-2.5 pr-4 font-medium">Day &amp; Period</th>
+                    <th className="py-2.5 pr-4 font-medium">Subject</th>
+                    <th className="py-2.5 pr-4 font-medium">Class &amp; Room</th>
+                    <th className="py-2.5 pr-4 font-medium">Faculty</th>
+                    <th className="py-2.5 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredStaffTimetable.map((tt) => {
+                    const isMine = tt.staffUid === currentUser.uid;
+                    const isLive = Boolean(
+                      activeSession &&
+                        activeSession.subjectCode === tt.subjectCode &&
+                        activeSession.className === tt.className
+                    );
+                    return (
+                      <tr key={tt.id}>
+                        <td className="py-3 pr-4">
+                          <div className="font-medium text-slate-900 tabular-nums">
+                            {tt.day} · P{tt.period}
+                          </div>
+                          <div className="text-xs font-mono text-slate-500 tabular-nums">
+                            {tt.startTime} – {tt.endTime}
+                          </div>
+                        </td>
+                        <td className="py-3 pr-4">
+                          <div className="font-medium text-slate-900">
+                            <span className="font-mono text-slate-700 mr-1.5">{tt.subjectCode}</span>
+                            {tt.subjectName}
+                          </div>
+                          {isLive && (
+                            <span className="text-[11px] font-semibold text-emerald-700">
+                              QR Session Active
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4 text-slate-700">
+                          <div>{tt.className}</div>
+                          <div className="text-xs text-slate-500">Room {tt.room}</div>
+                        </td>
+                        <td className="py-3 pr-4 text-slate-600 text-xs">{tt.staffName}</td>
+                        <td className="py-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={starting}
+                              onClick={() => handleStartFromTimetable(tt)}
+                              className="min-h-[32px] px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium inline-flex items-center gap-1"
+                            >
+                              <Play className="w-3 h-3" />
+                              <span>Start QR</span>
+                            </button>
+                            {isMine && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditTtForm(tt)}
+                                  className="min-h-[32px] px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium inline-flex items-center gap-1"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                  <span>Edit</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await deleteTimetableSession(tt.id);
+                                    setTtMessage({
+                                      type: 'success',
+                                      text: `Removed ${tt.subjectCode} (${tt.day} Period ${tt.period}).`,
+                                    });
+                                  }}
+                                  className="min-h-[32px] px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium inline-flex items-center gap-1"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Delete</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       ) : (
         /* Staff Check-In Tab */

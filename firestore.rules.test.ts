@@ -129,4 +129,19 @@ export const dirtyDozenCases = [
     payload: { gender: 'Boy', isHostel: true, hostelType: 'Girls Hostel' },
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: '17. Student Timetable Creation Attempt',
+    path: 'timetableSessions/tt-evil',
+    op: 'create',
+    actor: { uid: 'stu-6', role: 'student' },
+    payload: { id: 'tt-evil', day: 'Monday', period: 1, startTime: '09:00 AM', endTime: '09:50 AM', subjectCode: 'CS3401', subjectName: 'DSA', className: 'ME CSE Year 1', staffUid: 'stu-6', staffName: 'Nandhini A', room: 'PG-102' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '18. Cross-Staff Timetable Modification',
+    path: 'timetableSessions/tt-mecse1-monday-p1',
+    op: 'delete',
+    actor: { uid: 'staff-warden', role: 'staff' },
+    expected: 'PERMISSION_DENIED',
+  },
 ];

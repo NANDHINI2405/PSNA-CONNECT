@@ -8,7 +8,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { CanteenItem, CanteenOrderItem, OrderStatus } from '../types';
+import { CanteenItem, CanteenOrderItem, OrderStatus, canAccessScreen } from '../types';
 
 const STATUS_FLOW: OrderStatus[] = ['Placed', 'Preparing', 'Ready', 'Collected'];
 
@@ -38,7 +38,7 @@ export function CanteenView() {
   const [newTo, setNewTo] = useState('17:00');
   const [newVeg, setNewVeg] = useState(true);
 
-  if (!currentUser) return null;
+  if (!currentUser || !canAccessScreen(currentUser, 'canteen')) return null;
 
   const canManageCanteen = currentUser.role === 'management' || currentUser.role === 'staff';
   const categories = ['All', 'Breakfast', 'Lunch', 'Snacks', 'Beverages'];

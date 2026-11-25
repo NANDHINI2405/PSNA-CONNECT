@@ -33,20 +33,12 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isSignedIn() {
+    function isVerifiedAuth() {
       return request.auth != null && request.auth.token.email_verified == true;
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
     }
 
     function userDocPath(uid) {
       return /databases/$(database)/documents/users/$(uid);
-    }
-
-    function hasUserProfile() {
-      return isSignedIn() && exists(userDocPath(request.auth.uid));
     }
 
     function currentUserRole() {
@@ -54,7 +46,26 @@ service cloud.firestore {
     }
 
     function isBootstrappedAdmin() {
-      return isSignedIn() && request.auth.token.email == 'nandyviji2407@gmail.com';
+      return isVerifiedAuth() && request.auth.token.email == 'nandyviji2407@gmail.com';
+    }
+
+    function isActiveUser() {
+      return isBootstrappedAdmin()
+        || !exists(userDocPath(request.auth.uid))
+        || !('active' in currentUserRole())
+        || currentUserRole().active == true;
+    }
+
+    function isSignedIn() {
+      return isVerifiedAuth() && isActiveUser();
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(userDocPath(request.auth.uid));
     }
 
     function isManagement() {
@@ -96,7 +107,7 @@ service cloud.firestore {
     // --- Entity Validation Helpers ---
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'name', 'role', 'isHostel', 'isWarden', 'department'])
-        && data.keys().hasOnly(['uid', 'name', 'role', 'gender', 'isHostel', 'isWarden', 'hostelType', 'department', 'className', 'registerNumber', 'roomNumber', 'block', 'hostelStatus', 'requestedRole', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'name', 'role', 'gender', 'isHostel', 'isWarden', 'hostelType', 'department', 'programLevel', 'academicYear', 'rollNumber', 'className', 'registerNumber', 'roomNumber', 'block', 'hostelStatus', 'requestedRole', 'masterId', 'active', 'deactivatedAt', 'deactivatedByUid', 'createdAt'])
         && isValidId(data.uid)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
         && data.role in ['student', 'staff', 'management']
@@ -106,13 +117,82 @@ service cloud.firestore {
         && (!('hostelType' in data) || isValidHostelType(data.hostelType))
         && ((!data.isHostel && !data.isWarden) || !('gender' in data) || !('hostelType' in data) || matchesGenderAndHostel(data.gender, data.hostelType))
         && data.department is string && data.department.size() <= 80
+        && (!('programLevel' in data) || data.programLevel in ['UG', 'PG'])
+        && (!('academicYear' in data) || (data.academicYear is string && data.academicYear.size() <= 20))
+        && (!('rollNumber' in data) || (data.rollNumber is string && data.rollNumber.size() <= 32))
         && (!('className' in data) || (data.className is string && data.className.size() <= 40))
         && (!('registerNumber' in data) || (data.registerNumber is string && data.registerNumber.size() <= 32))
         && (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 16))
         && (!('block' in data) || (data.block is string && data.block.size() <= 32))
         && (!('hostelStatus' in data) || (data.hostelStatus in ['In', 'Out', 'Leave']))
         && (!('requestedRole' in data) || (data.requestedRole in ['student', 'hostel_resident', 'staff', 'warden', 'management']))
+        && (!('masterId' in data) || (data.masterId is string && data.masterId.size() <= 32))
+        && (!('active' in data) || data.active is bool)
+        && (!('deactivatedAt' in data) || (data.deactivatedAt is string && data.deactivatedAt.size() <= 40))
+        && (!('deactivatedByUid' in data) || (data.deactivatedByUid is string && data.deactivatedByUid.size() <= 128))
         && (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
+    }
+
+    function isValidMasterRegistryEntry(data) {
+      return data.keys().hasAll(['id', 'registerOrStaffId', 'name', 'email', 'role', 'department', 'year', 'gender', 'isHostel', 'isWarden', 'active', 'importedAt'])
+        && data.keys().hasOnly(['id', 'registerOrStaffId', 'name', 'email', 'role', 'department', 'year', 'programLevel', 'academicYear', 'className', 'gender', 'isHostel', 'isWarden', 'hostelType', 'active', 'claimedUid', 'importedAt', 'importedByUid'])
+        && isValidId(data.id)
+        && data.registerOrStaffId is string && data.registerOrStaffId.size() >= 1 && data.registerOrStaffId.size() <= 32
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 120
+        && data.role in ['student', 'staff', 'management']
+        && data.department is string && data.department.size() <= 80
+        && data.year is string && data.year.size() <= 20
+        && (!('programLevel' in data) || data.programLevel in ['UG', 'PG'])
+        && (!('academicYear' in data) || (data.academicYear is string && data.academicYear.size() <= 20))
+        && (!('className' in data) || (data.className is string && data.className.size() <= 40))
+        && isValidGender(data.gender)
+        && data.isHostel is bool
+        && data.isWarden is bool
+        && (!('hostelType' in data) || isValidHostelType(data.hostelType))
+        && data.active is bool
+        && (!('claimedUid' in data) || (data.claimedUid is string && data.claimedUid.size() <= 128))
+        && data.importedAt is string && data.importedAt.size() <= 40
+        && (!('importedByUid' in data) || (data.importedByUid is string && data.importedByUid.size() <= 128));
+    }
+
+    function isValidApprovalRequest(data) {
+      return data.keys().hasAll(['id', 'requesterUid', 'requesterName', 'requesterEmail', 'requesterDepartment', 'requesterGender', 'requestType', 'targetQueue', 'reason', 'status', 'createdAt'])
+        && data.keys().hasOnly(['id', 'requesterUid', 'requesterName', 'requesterEmail', 'requesterRegisterNo', 'requesterDepartment', 'requesterGender', 'requestType', 'targetQueue', 'targetHostelType', 'reason', 'status', 'createdAt', 'reviewedByUid', 'reviewedByName', 'reviewedAt', 'reviewNote'])
+        && isValidId(data.id)
+        && isValidId(data.requesterUid)
+        && data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 100
+        && data.requesterEmail is string && data.requesterEmail.size() <= 120
+        && (!('requesterRegisterNo' in data) || (data.requesterRegisterNo is string && data.requesterRegisterNo.size() <= 32))
+        && data.requesterDepartment is string && data.requesterDepartment.size() <= 80
+        && isValidGender(data.requesterGender)
+        && data.requestType in ['hostel_resident', 'staff', 'warden']
+        && data.targetQueue in ['warden', 'management']
+        && (!('targetHostelType' in data) || isValidHostelType(data.targetHostelType))
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 500
+        && data.status in ['Pending', 'Approved', 'Rejected']
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && (!('reviewedByUid' in data) || (data.reviewedByUid is string && data.reviewedByUid.size() <= 128))
+        && (!('reviewedByName' in data) || (data.reviewedByName is string && data.reviewedByName.size() <= 100))
+        && (!('reviewedAt' in data) || (data.reviewedAt is string && data.reviewedAt.size() <= 40))
+        && (!('reviewNote' in data) || (data.reviewNote is string && data.reviewNote.size() <= 300));
+    }
+
+    function isValidAuditLogEntry(data) {
+      return data.keys().hasAll(['id', 'category', 'targetUid', 'targetName', 'actorUid', 'actorName', 'actorRole', 'field', 'oldValue', 'newValue', 'timestamp'])
+        && data.keys().hasOnly(['id', 'category', 'targetUid', 'targetName', 'actorUid', 'actorName', 'actorRole', 'field', 'oldValue', 'newValue', 'timestamp', 'note'])
+        && isValidId(data.id)
+        && data.category in ['role_change', 'medical_record', 'personal_record', 'account_status']
+        && isValidId(data.targetUid)
+        && data.targetName is string && data.targetName.size() <= 100
+        && isValidId(data.actorUid)
+        && data.actorName is string && data.actorName.size() <= 100
+        && data.actorRole is string && data.actorRole.size() <= 60
+        && data.field is string && data.field.size() <= 60
+        && data.oldValue is string && data.oldValue.size() <= 500
+        && data.newValue is string && data.newValue.size() <= 500
+        && data.timestamp is string && data.timestamp.size() <= 40
+        && (!('note' in data) || (data.note is string && data.note.size() <= 300));
     }
 
     function isValidUserPrivate(data) {
@@ -351,15 +431,45 @@ service cloud.firestore {
         && (!('agenda' in data) || (data.agenda is string && data.agenda.size() <= 600));
     }
 
+    function isValidTimetableSession(data) {
+      return data.keys().hasAll(['id', 'day', 'period', 'startTime', 'endTime', 'subjectCode', 'subjectName', 'className', 'staffUid', 'staffName', 'room'])
+        && data.keys().hasOnly(['id', 'day', 'period', 'startTime', 'endTime', 'subjectCode', 'subjectName', 'className', 'department', 'staffUid', 'staffName', 'room', 'radiusMeters'])
+        && isValidId(data.id)
+        && isValidId(data.staffUid)
+        && data.day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        && data.period is number && data.period >= 1 && data.period <= 8
+        && data.startTime is string && data.startTime.size() >= 1 && data.startTime.size() <= 20
+        && data.endTime is string && data.endTime.size() >= 1 && data.endTime.size() <= 20
+        && data.subjectCode is string && data.subjectCode.size() >= 1 && data.subjectCode.size() <= 20
+        && data.subjectName is string && data.subjectName.size() >= 1 && data.subjectName.size() <= 100
+        && data.className is string && data.className.size() >= 1 && data.className.size() <= 40
+        && data.staffName is string && data.staffName.size() >= 1 && data.staffName.size() <= 100
+        && data.room is string && data.room.size() >= 1 && data.room.size() <= 32
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('radiusMeters' in data) || (data.radiusMeters is number && data.radiusMeters >= 50 && data.radiusMeters <= 1000));
+    }
+
     // --- Collection Rules ---
 
     // 1. Public Campus Directory Profiles
     match /users/{userId} {
-      allow get: if isValidId(userId) && isSignedIn();
+      allow get: if isValidId(userId) && (isSignedIn() || (isVerifiedAuth() && request.auth.uid == userId));
       allow list: if isSignedIn() && resource.data.uid is string;
       allow create: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming()) && (
         isManagement() ||
-        (isOwner(userId) && incoming().uid == request.auth.uid && incoming().role == 'student' && incoming().isHostel == false && incoming().isWarden == false)
+        (isOwner(userId)
+          && incoming().uid == request.auth.uid
+          && (!('active' in incoming()) || incoming().active == true)
+          && 'masterId' in incoming()
+          && isValidId(incoming().masterId)
+          && exists(/databases/$(database)/documents/masterRegistry/$(incoming().masterId))
+          && get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.email.lower() == request.auth.token.email.lower()
+          && get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.active == true
+          && incoming().role == get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.role
+          && incoming().isHostel == get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.isHostel
+          && incoming().isWarden == get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.isWarden
+          && incoming().department == get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.department
+          && (!('gender' in incoming()) || incoming().gender == get(/databases/$(database)/documents/masterRegistry/$(incoming().masterId)).data.gender))
       );
       allow update: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming()) && (
         isManagement() ||
@@ -648,6 +758,84 @@ service cloud.firestore {
       );
       allow update: if isValidId(meetingId) && (isStaff() || isManagement()) && isValidCampusMeeting(incoming());
       allow delete: if isValidId(meetingId) && isManagement();
+    }
+
+    // 17. Class Timetable Sessions
+    match /timetableSessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.className is string;
+      allow create: if isValidId(sessionId) && (isStaff() || isManagement()) && isValidTimetableSession(incoming()) && (
+        isManagement() || incoming().staffUid == request.auth.uid
+      );
+      allow update: if isValidId(sessionId) && (isStaff() || isManagement()) && isValidTimetableSession(incoming()) && (
+        isManagement() || (existing().staffUid == request.auth.uid && incoming().staffUid == existing().staffUid)
+      );
+      allow delete: if isValidId(sessionId) && (
+        isManagement() || (isStaff() && existing().staffUid == request.auth.uid)
+      );
+    }
+
+    // 18. Pre-Approved Master Directory (Server-Side Truth for Onboarding)
+    match /masterRegistry/{entryId} {
+      allow get: if isValidId(entryId) && (
+        isManagement() ||
+        (request.auth != null && ('email' in request.auth.token) && request.auth.token.email is string && resource.data.email.lower() == request.auth.token.email.lower())
+      );
+      allow list: if isManagement() || (
+        isVerifiedAuth() && ('email' in request.auth.token) && request.auth.token.email is string && resource.data.email.lower() == request.auth.token.email.lower()
+      );
+      allow create: if isValidId(entryId) && isManagement() && isValidMasterRegistryEntry(incoming());
+      allow update: if isValidId(entryId) && isManagement() && isValidMasterRegistryEntry(incoming());
+      allow delete: if isValidId(entryId) && isManagement();
+    }
+
+    // 19. Approval Queue (Wing Wardens for Hostel Residents, Management for Staff/Warden)
+    match /approvalRequests/{requestId} {
+      allow get: if isValidId(requestId) && isSignedIn() && (
+        isManagement() ||
+        existing().requesterUid == request.auth.uid ||
+        (isWingWardenOnly() && existing().targetQueue == 'warden' && ('targetHostelType' in existing()) && existing().targetHostelType == callerHostelType())
+      );
+      allow list: if isSignedIn() && (
+        isManagement() ||
+        resource.data.requesterUid == request.auth.uid ||
+        (isWingWardenOnly() && resource.data.targetQueue == 'warden' && ('targetHostelType' in resource.data) && resource.data.targetHostelType == callerHostelType())
+      );
+      allow create: if isValidId(requestId) && isSignedIn() && isValidApprovalRequest(incoming()) && (
+        isManagement() ||
+        (incoming().requesterUid == request.auth.uid
+          && incoming().status == 'Pending'
+          && (
+            (incoming().requestType == 'hostel_resident' && incoming().targetQueue == 'warden' && ('targetHostelType' in incoming()) && matchesGenderAndHostel(incoming().requesterGender, incoming().targetHostelType)) ||
+            (incoming().requestType in ['staff', 'warden'] && incoming().targetQueue == 'management')
+          ))
+      );
+      allow update: if isValidId(requestId) && isSignedIn() && isValidApprovalRequest(incoming())
+        && existing().status == 'Pending'
+        && incoming().status in ['Approved', 'Rejected']
+        && incoming().requesterUid == existing().requesterUid
+        && incoming().requestType == existing().requestType
+        && incoming().targetQueue == existing().targetQueue
+        && (
+          isManagement() ||
+          (isWingWardenOnly()
+            && existing().targetQueue == 'warden'
+            && ('targetHostelType' in existing())
+            && existing().targetHostelType == callerHostelType()
+            && incoming().reviewedByUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedByUid', 'reviewedByName', 'reviewedAt', 'reviewNote']))
+        );
+      allow delete: if isValidId(requestId) && isManagement();
+    }
+
+    // 20. Immutable Audit Logs (Role, Account Status, Medical & Personal Record Edits)
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isManagement();
+      allow list: if isManagement() && resource.data.category is string;
+      allow create: if isValidId(logId) && isSignedIn() && isValidAuditLogEntry(incoming()) && (
+        isManagement() || incoming().actorUid == request.auth.uid
+      );
+      allow update, delete: if false;
     }
 
     // Connection test document (read-only ping)

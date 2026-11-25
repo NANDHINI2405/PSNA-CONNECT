@@ -5,23 +5,29 @@
 
 import React from 'react';
 import { AttendanceView } from './components/AttendanceView';
+import { AuditLogView } from './components/AuditLogView';
 import { CanteenView } from './components/CanteenView';
 import { ChatView } from './components/ChatView';
 import { DashboardView } from './components/DashboardView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HostelView } from './components/HostelView';
 import { Layout } from './components/Layout';
-import { LoginPage } from './components/LoginPage';
+import {
+  DeactivatedAccountScreen,
+  EmailVerificationScreen,
+  LoginPage,
+} from './components/LoginPage';
 import { MailMeetingsView } from './components/MailMeetingsView';
 import { ManagementView } from './components/ManagementView';
 import { NoticesEventsView } from './components/NoticesEventsView';
 import { PdfViewerView } from './components/PdfViewerView';
 import { AppProvider, useApp } from './context/AppContext';
+import { canAccessScreen } from './types';
 
 function AppContent() {
-  const { currentUser, loading, activeScreen } = useApp();
+  const { currentUser, pendingVerification, loading, activeScreen } = useApp();
 
-  if (loading && !currentUser) {
+  if (loading && !currentUser && !pendingVerification) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl p-6 space-y-4 animate-pulse">
@@ -34,12 +40,22 @@ function AppContent() {
     );
   }
 
+  if (pendingVerification && !currentUser) {
+    return <EmailVerificationScreen />;
+  }
+
   if (!currentUser) {
     return <LoginPage />;
   }
 
+  if (currentUser.active === false) {
+    return <DeactivatedAccountScreen />;
+  }
+
+  const resolvedScreen = canAccessScreen(currentUser, activeScreen) ? activeScreen : 'dashboard';
+
   const renderScreen = () => {
-    switch (activeScreen) {
+    switch (resolvedScreen) {
       case 'dashboard':
         return <DashboardView />;
       case 'attendance':
@@ -58,6 +74,8 @@ function AppContent() {
         return <MailMeetingsView />;
       case 'management':
         return <ManagementView />;
+      case 'audit':
+        return <AuditLogView />;
       default:
         return <DashboardView />;
     }

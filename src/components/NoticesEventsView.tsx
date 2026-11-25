@@ -3,7 +3,7 @@ import { Bell, Calendar, MapPin, Plus, Sparkles } from 'lucide-react';
 import { addDays, formatIsoDate } from '../data/seedData';
 import { useApp } from '../context/AppContext';
 import { getTodayIso } from '../services/dataService';
-import { Audience } from '../types';
+import { Audience, canAccessScreen } from '../types';
 
 export function NoticesEventsView() {
   const { currentUser, state, visibleNotices, createNotice, createEvent } = useApp();
@@ -25,7 +25,7 @@ export function NoticesEventsView() {
   const [eVenue, setEVenue] = useState('Sri Ranganatha Auditorium');
   const [eAudience, setEAudience] = useState<Audience>('All');
 
-  if (!currentUser) return null;
+  if (!currentUser || !canAccessScreen(currentUser, 'notices')) return null;
 
   const canPost = currentUser.role === 'staff' || currentUser.role === 'management';
   const todayStr = getTodayIso();

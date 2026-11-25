@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquare, Plus, Send, Users } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
-import { HostelType, getUserHostelType } from '../types';
+import { HostelType, canAccessScreen, getUserHostelType } from '../types';
 
 export function ChatView() {
   const {
@@ -64,7 +64,7 @@ export function ChatView() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeMessages.length, activeThread?.id]);
 
-  if (!currentUser) return null;
+  if (!currentUser || !canAccessScreen(currentUser, 'chat')) return null;
 
   const canCreateGroup = currentUser.role === 'staff' || currentUser.role === 'management';
   const dmCandidates = state.users.filter((u) => u.uid !== currentUser.uid);

@@ -1,7 +1,10 @@
 import {
   createUserWithEmailAndPassword,
+  deleteUser,
   GoogleAuthProvider,
   onAuthStateChanged,
+  sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
@@ -10,6 +13,7 @@ import {
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -21,8 +25,10 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
+  SEED_APPROVAL_REQUESTS,
   SEED_ATTENDANCE_RECORDS,
   SEED_ATTENDANCE_SESSIONS,
+  SEED_AUDIT_LOGS,
   SEED_CANTEEN_ITEMS,
   SEED_CANTEEN_ORDERS,
   SEED_CHAT_MESSAGES,
@@ -33,17 +39,21 @@ import {
   SEED_HOSTEL_MENUS,
   SEED_HOSTEL_ROOMS,
   SEED_MAILS,
+  SEED_MASTER_REGISTRY,
   SEED_MEETINGS,
   SEED_NOTICES,
   SEED_STAFF_CHECKINS,
+  SEED_TIMETABLE_SESSIONS,
   SEED_USER_PRIVATE,
   SEED_USERS,
   formatIsoDate,
 } from '../data/seedData';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
+  ApprovalRequest,
   AttendanceRecord,
   AttendanceSession,
+  AuditLogEntry,
   CampusDocument,
   CampusEvent,
   CampusGeofence,
@@ -53,24 +63,30 @@ import {
   ChatMessage,
   ChatThread,
   DayOfWeek,
-  Gender,
   HostelAttendanceLog,
   HostelMenu,
   HostelRoom,
   HostelStatus,
   MailMessage,
+  MasterRegistryEntry,
   Notice,
   OrderStatus,
   StaffCheckin,
+  TimetableSession,
   UserPrivateInfo,
   UserProfile,
+  getDefaultBlockForHostel,
   getUserHostelType,
+  normalizeRegistryId,
 } from '../types';
 import { DEFAULT_CAMPUS_GEOFENCE } from '../utils/geo';
 
 export interface AppDataState {
   users: UserProfile[];
   userPrivate: Record<string, UserPrivateInfo>;
+  masterRegistry: MasterRegistryEntry[];
+  approvalRequests: ApprovalRequest[];
+  auditLogs: AuditLogEntry[];
   attendanceSessions: AttendanceSession[];
   attendanceRecords: AttendanceRecord[];
   staffCheckins: StaffCheckin[];
@@ -86,12 +102,14 @@ export interface AppDataState {
   documents: CampusDocument[];
   mails: MailMessage[];
   meetings: CampusMeeting[];
+  timetableSessions: TimetableSession[];
   geofence: CampusGeofence;
 }
 
-export const STORAGE_KEY = 'psna_connect_store_v3';
+export const STORAGE_KEY = 'psna_connect_store_v4';
 const CACHED_NOTICES_KEY = 'psna_connect_cached_notices_v1';
 const DEMO_UID_KEY = 'psna_connect_demo_uid_v1';
+const PENDING_MASTER_KEY = 'psna_connect_pending_master_v1';
 
 function buildInitialState(): AppDataState {
   const groupedMessages: Record<string, ChatMessage[]> = {};
@@ -102,6 +120,9 @@ function buildInitialState(): AppDataState {
   return {
     users: SEED_USERS,
     userPrivate: SEED_USER_PRIVATE,
+    masterRegistry: SEED_MASTER_REGISTRY,
+    approvalRequests: SEED_APPROVAL_REQUESTS,
+    auditLogs: SEED_AUDIT_LOGS,
     attendanceSessions: SEED_ATTENDANCE_SESSIONS,
     attendanceRecords: SEED_ATTENDANCE_RECORDS,
     staffCheckins: SEED_STAFF_CHECKINS,
@@ -117,6 +138,7 @@ function buildInitialState(): AppDataState {
     documents: SEED_DOCUMENTS,
     mails: SEED_MAILS,
     meetings: SEED_MEETINGS,
+    timetableSessions: SEED_TIMETABLE_SESSIONS,
     geofence: DEFAULT_CAMPUS_GEOFENCE,
   };
 }
@@ -130,7 +152,19 @@ export function loadLocalState(): AppDataState {
       localStorage.setItem(CACHED_NOTICES_KEY, JSON.stringify(init.notices));
       return init;
     }
-    return JSON.parse(raw) as AppDataState;
+    const parsed = JSON.parse(raw) as Partial<AppDataState>;
+    const init = buildInitialState();
+    return {
+      ...init,
+      ...parsed,
+      masterRegistry:
+        parsed.masterRegistry && parsed.masterRegistry.length > 0
+          ? parsed.masterRegistry
+          : init.masterRegistry,
+      approvalRequests: parsed.approvalRequests ?? init.approvalRequests,
+      auditLogs: parsed.auditLogs ?? init.auditLogs,
+      timetableSessions: parsed.timetableSessions ?? init.timetableSessions,
+    };
   } catch {
     return buildInitialState();
   }
@@ -229,84 +263,242 @@ export function filterPrivateMapForRole(
   return {};
 }
 
+function savePendingMasterHint(email: string, masterId: string): void {
+  try {
+    const raw = localStorage.getItem(PENDING_MASTER_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    map[email.toLowerCase()] = masterId;
+    localStorage.setItem(PENDING_MASTER_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+function getPendingMasterHint(email: string): string | null {
+  try {
+    const raw = localStorage.getItem(PENDING_MASTER_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, string>;
+    return map[email.toLowerCase()] || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function signInWithGoogleFirebase(): Promise<UserProfile> {
   const provider = new GoogleAuthProvider();
   const cred = await signInWithPopup(auth, provider);
   return ensureFirebaseUserProfile(cred.user);
 }
 
-export async function signInWithEmailFirebase(email: string, password: string): Promise<UserProfile> {
-  const cred = await signInWithEmailAndPassword(auth, email, password);
-  return ensureFirebaseUserProfile(cred.user);
+export async function signInWithEmailFirebase(
+  email: string,
+  password: string
+): Promise<{ user: FirebaseUser; profile: UserProfile | null }> {
+  const cred = await signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
+  if (!cred.user.emailVerified) {
+    return { user: cred.user, profile: null };
+  }
+  const profile = await ensureFirebaseUserProfile(cred.user);
+  return { user: cred.user, profile };
 }
 
 export async function signUpWithEmailFirebase(
-  name: string,
   email: string,
-  password: string,
-  department: string,
-  requestedRole?: UserProfile['requestedRole'],
-  gender?: Gender
-): Promise<UserProfile> {
-  const cred = await createUserWithEmailAndPassword(auth, email, password);
-  await updateProfile(cred.user, { displayName: name });
-  return ensureFirebaseUserProfile(cred.user, { name, department, requestedRole, gender });
+  registerOrStaffId: string,
+  password: string
+): Promise<{ user: FirebaseUser; masterEntry: MasterRegistryEntry }> {
+  const cleanEmail = email.trim().toLowerCase();
+  const masterId = normalizeRegistryId(registerOrStaffId);
+  if (!cleanEmail.endsWith('@psnacet.edu.in')) {
+    throw new Error('Only official @psnacet.edu.in college emails are permitted.');
+  }
+  if (!masterId) {
+    throw new Error('Please enter your Register Number or Staff ID.');
+  }
+
+  const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+  try {
+    const masterSnap = await getDoc(doc(db, 'masterRegistry', masterId));
+    if (!masterSnap.exists()) {
+      throw new Error(
+        'Your email and Register No / Staff ID were not found in the Management-approved master list.'
+      );
+    }
+    const master = masterSnap.data() as MasterRegistryEntry;
+    if (master.email.toLowerCase() !== cleanEmail) {
+      throw new Error(
+        'Your email does not match the college email on record for this Register No / Staff ID.'
+      );
+    }
+    if (!master.active) {
+      throw new Error(
+        'This master directory record has been deactivated by Management. Contact administration.'
+      );
+    }
+    if (master.claimedUid && master.claimedUid !== cred.user.uid) {
+      throw new Error(
+        'This Register No / Staff ID has already been claimed by another account. Use Sign In or Forgot Password.'
+      );
+    }
+    await updateProfile(cred.user, { displayName: master.name });
+    savePendingMasterHint(cleanEmail, master.id);
+    await sendEmailVerification(cred.user);
+    return { user: cred.user, masterEntry: master };
+  } catch (err) {
+    try {
+      await deleteUser(cred.user);
+    } catch {
+      // ignore cleanup error
+    }
+    throw err;
+  }
+}
+
+export async function sendPasswordResetEmailFirebase(email: string): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new Error('Please enter your college email address.');
+  }
+  await sendPasswordResetEmail(auth, cleanEmail);
+}
+
+export async function resendVerificationEmailFirebase(): Promise<void> {
+  if (!auth.currentUser) {
+    throw new Error('No pending account session found. Please sign in again.');
+  }
+  await sendEmailVerification(auth.currentUser);
+}
+
+export async function reloadFirebaseUser(): Promise<FirebaseUser | null> {
+  if (!auth.currentUser) return null;
+  await auth.currentUser.reload();
+  return auth.currentUser;
 }
 
 export async function signOutFirebase(): Promise<void> {
   await signOut(auth);
 }
 
+async function resolveMasterEntryForUser(
+  email: string,
+  hintEntry?: MasterRegistryEntry
+): Promise<MasterRegistryEntry | null> {
+  if (hintEntry) return hintEntry;
+  const cleanEmail = email.trim().toLowerCase();
+  const hintId = getPendingMasterHint(cleanEmail);
+  if (hintId) {
+    const snap = await getDoc(doc(db, 'masterRegistry', hintId));
+    if (snap.exists()) {
+      return snap.data() as MasterRegistryEntry;
+    }
+  }
+  const qSnap = await getDocs(
+    query(collection(db, 'masterRegistry'), where('email', '==', cleanEmail))
+  );
+  if (!qSnap.empty) {
+    return qSnap.docs[0].data() as MasterRegistryEntry;
+  }
+  return null;
+}
+
 export async function ensureFirebaseUserProfile(
   fbUser: FirebaseUser,
-  overrides?: {
-    name?: string;
-    department?: string;
-    requestedRole?: UserProfile['requestedRole'];
-    gender?: Gender;
-  }
+  hintEntry?: MasterRegistryEntry
 ): Promise<UserProfile> {
+  if (!fbUser.emailVerified) {
+    throw new Error('EMAIL_NOT_VERIFIED');
+  }
   const userRef = doc(db, 'users', fbUser.uid);
   try {
     const snap = await getDoc(userRef);
     if (snap.exists()) {
       return snap.data() as UserProfile;
     }
-    const isAdminEmail =
-      fbUser.email?.toLowerCase() === 'nandyviji2407@gmail.com' && fbUser.emailVerified;
 
-    // Security rule: new sign-ups are always created as Student unless bootstrapped admin;
-    // requestedRole records non-student requests for 1-click Management approval.
+    const cleanEmail = (fbUser.email || '').trim().toLowerCase();
+    const isAdminEmail =
+      cleanEmail === 'nandyviji2407@gmail.com' && fbUser.emailVerified;
+
+    if (isAdminEmail) {
+      const adminProfile: UserProfile = {
+        uid: fbUser.uid,
+        name: fbUser.displayName || 'Campus Administrator',
+        role: 'management',
+        gender: 'Girl',
+        isHostel: false,
+        isWarden: false,
+        department: 'Administration',
+        active: true,
+        createdAt: new Date().toISOString(),
+      };
+      await setDoc(userRef, adminProfile);
+      await setDoc(doc(db, 'userPrivate', fbUser.uid), {
+        uid: fbUser.uid,
+        email: cleanEmail,
+        updatedAt: new Date().toISOString(),
+      });
+      return adminProfile;
+    }
+
+    if (!cleanEmail.endsWith('@psnacet.edu.in')) {
+      throw new Error('Only verified @psnacet.edu.in accounts or pre-approved campus members can access PSNA Connect.');
+    }
+
+    const master = await resolveMasterEntryForUser(cleanEmail, hintEntry);
+    if (!master) {
+      throw new Error(
+        'Your @psnacet.edu.in email is not listed in the Management-approved master directory.'
+      );
+    }
+    if (!master.active) {
+      throw new Error('Your pre-approved master directory entry is currently deactivated.');
+    }
+
+    const resolvedHostelType =
+      master.isHostel || master.isWarden
+        ? master.hostelType || (master.gender === 'Girl' ? 'Girls Hostel' : 'Boys Hostel')
+        : undefined;
+
     const newProfile: UserProfile = {
       uid: fbUser.uid,
-      name: overrides?.name || fbUser.displayName || fbUser.email?.split('@')[0] || 'Campus User',
-      role: isAdminEmail ? 'management' : 'student',
-      gender: overrides?.gender || 'Girl',
-      isHostel: false,
-      isWarden: false,
-      department: overrides?.department || (isAdminEmail ? 'Administration' : 'Computer Science & Engineering'),
-      className: isAdminEmail ? undefined : 'III CSE A',
-      registerNumber: isAdminEmail ? undefined : `921324${String(Math.floor(100000 + Math.random() * 899999))}`,
-      requestedRole:
-        !isAdminEmail && overrides?.requestedRole && overrides.requestedRole !== 'student'
-          ? overrides.requestedRole
-          : undefined,
+      name: master.name.slice(0, 100),
+      role: master.role,
+      gender: master.gender,
+      isHostel: master.isHostel,
+      isWarden: master.isWarden,
+      hostelType: resolvedHostelType,
+      programLevel: master.programLevel,
+      academicYear: master.academicYear,
+      rollNumber: master.role === 'student' ? master.registerOrStaffId : undefined,
+      department: master.department.slice(0, 80),
+      className: master.className,
+      registerNumber: master.registerOrStaffId,
+      block: resolvedHostelType ? getDefaultBlockForHostel(resolvedHostelType) : undefined,
+      hostelStatus: master.isHostel ? 'In' : undefined,
+      masterId: master.id,
+      active: true,
       createdAt: new Date().toISOString(),
     };
-    // Strip undefined fields for Firestore
+
     const cleanProfile = Object.fromEntries(
       Object.entries(newProfile).filter(([, v]) => v !== undefined)
     );
     await setDoc(userRef, cleanProfile);
 
-    const privateRef = doc(db, 'userPrivate', fbUser.uid);
-    await setDoc(privateRef, {
+    const privPayload: Record<string, unknown> = {
       uid: fbUser.uid,
-      email: fbUser.email || '',
+      email: cleanEmail,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    if (resolvedHostelType) privPayload.hostelType = resolvedHostelType;
+    await setDoc(doc(db, 'userPrivate', fbUser.uid), privPayload);
+
     return newProfile;
   } catch (error) {
+    if (error instanceof Error && (error.message.includes('master directory') || error.message.includes('@psnacet.edu.in') || error.message === 'EMAIL_NOT_VERIFIED')) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.WRITE, `users/${fbUser.uid}`);
   }
 }
@@ -379,8 +571,24 @@ export async function seedFirestoreWithDummyData(currentUser: UserProfile): Prom
   for (const sess of SEED_ATTENDANCE_SESSIONS) {
     batch.set(doc(db, 'attendanceSessions', sess.id), sess);
   }
+  for (const tt of SEED_TIMETABLE_SESSIONS) {
+    const cleanTt = Object.fromEntries(Object.entries(tt).filter(([, v]) => v !== undefined));
+    batch.set(doc(db, 'timetableSessions', tt.id), cleanTt);
+  }
   for (const chk of SEED_STAFF_CHECKINS) {
     batch.set(doc(db, 'staffCheckins', chk.id), chk);
+  }
+  for (const m of SEED_MASTER_REGISTRY) {
+    const cleanM = Object.fromEntries(Object.entries(m).filter(([, v]) => v !== undefined));
+    batch.set(doc(db, 'masterRegistry', m.id), cleanM);
+  }
+  for (const req of SEED_APPROVAL_REQUESTS) {
+    const cleanReq = Object.fromEntries(Object.entries(req).filter(([, v]) => v !== undefined));
+    batch.set(doc(db, 'approvalRequests', req.id), cleanReq);
+  }
+  for (const log of SEED_AUDIT_LOGS) {
+    const cleanLog = Object.fromEntries(Object.entries(log).filter(([, v]) => v !== undefined));
+    batch.set(doc(db, 'auditLogs', log.id), cleanLog);
   }
   await batch.commit();
 
@@ -397,6 +605,10 @@ export function subscribeFirestoreState(
   currentUser: UserProfile,
   onUpdate: (partial: Partial<AppDataState>) => void
 ): () => void {
+  if (currentUser.active === false) {
+    return () => {};
+  }
+
   const unsubs: (() => void)[] = [];
 
   const watchCol = <T>(
@@ -422,11 +634,48 @@ export function subscribeFirestoreState(
 
   watchCol<UserProfile>('users', 'users');
   watchCol<AttendanceSession>('attendanceSessions', 'attendanceSessions');
+  watchCol<TimetableSession>('timetableSessions', 'timetableSessions');
   watchCol<CanteenItem>('canteenItems', 'canteenItems');
   watchCol<Notice>('notices', 'notices');
   watchCol<CampusEvent>('events', 'events');
   watchCol<CampusDocument>('documents', 'documents');
   watchCol<CampusMeeting>('meetings', 'meetings');
+
+  if (currentUser.role === 'management') {
+    watchCol<MasterRegistryEntry>('masterRegistry', 'masterRegistry');
+    watchCol<AuditLogEntry>('auditLogs', 'auditLogs');
+    watchCol<ApprovalRequest>('approvalRequests', 'approvalRequests');
+  } else {
+    const myHostelType = getUserHostelType(currentUser);
+    const mergedReqs = new Map<string, ApprovalRequest>();
+    const emitReqs = () => onUpdate({ approvalRequests: Array.from(mergedReqs.values()) });
+
+    const unsubOwnReqs = onSnapshot(
+      query(collection(db, 'approvalRequests'), where('requesterUid', '==', currentUser.uid)),
+      (snap) => {
+        snap.docs.forEach((d) => mergedReqs.set(d.id, d.data() as ApprovalRequest));
+        emitReqs();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'approvalRequests')
+    );
+    unsubs.push(unsubOwnReqs);
+
+    if (currentUser.isWarden && myHostelType) {
+      const unsubWardenReqs = onSnapshot(
+        query(
+          collection(db, 'approvalRequests'),
+          where('targetQueue', '==', 'warden'),
+          where('targetHostelType', '==', myHostelType)
+        ),
+        (snap) => {
+          snap.docs.forEach((d) => mergedReqs.set(d.id, d.data() as ApprovalRequest));
+          emitReqs();
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'approvalRequests')
+      );
+      unsubs.push(unsubWardenReqs);
+    }
+  }
 
   // Role-scoped queries so Firestore rules never reject unauthorized list queries
   if (currentUser.role === 'management' || currentUser.role === 'staff') {
@@ -651,6 +900,14 @@ export async function fbUpdateDoc(path: string, id: string, data: object): Promi
     await updateDoc(doc(db, path, id), clean);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `${path}/${id}`);
+  }
+}
+
+export async function fbDeleteDoc(path: string, id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, path, id));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `${path}/${id}`);
   }
 }
 

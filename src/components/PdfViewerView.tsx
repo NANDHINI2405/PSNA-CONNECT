@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Download, Eye, FileText, Plus, Upload } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { Audience, CampusDocument } from '../types';
+import { Audience, CampusDocument, canAccessScreen } from '../types';
 import { buildPdfDataUrl } from '../utils/pdfGenerator';
 
 export function PdfViewerView() {
@@ -21,7 +21,7 @@ export function PdfViewerView() {
   const [pdfDataUrl, setPdfDataUrl] = useState<string>('');
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  if (!currentUser) return null;
+  if (!currentUser || !canAccessScreen(currentUser, 'documents')) return null;
 
   const canUpload = currentUser.role === 'staff' || currentUser.role === 'management';
 

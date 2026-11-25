@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Bell,
   Building2,
+  ClipboardList,
   Coffee,
   FileText,
   Home,
@@ -27,6 +28,7 @@ interface NavItem {
 const ALL_NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', shortLabel: 'Home', icon: LayoutDashboard },
   { id: 'management', label: 'Management Overview', shortLabel: 'Admin', icon: Building2 },
+  { id: 'audit', label: 'Audit Log', shortLabel: 'Audit', icon: ClipboardList },
   { id: 'attendance', label: 'Attendance', shortLabel: 'Attend', icon: QrCode },
   { id: 'hostel', label: 'Hostel', shortLabel: 'Hostel', icon: Home },
   { id: 'canteen', label: 'Canteen', shortLabel: 'Canteen', icon: Coffee },
@@ -80,9 +82,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="text-xs text-blue-700 font-medium mt-0.5 truncate">
             {roleLabel} · {currentUser.department}
           </div>
-          {currentUser.registerNumber && (
-            <div className="text-xs font-mono text-slate-500 mt-0.5 tabular-nums">
-              {currentUser.registerNumber}
+          {(currentUser.programLevel || currentUser.rollNumber || currentUser.registerNumber) && (
+            <div className="text-xs font-mono text-slate-500 mt-0.5 tabular-nums truncate">
+              {currentUser.programLevel
+                ? `${currentUser.programLevel}${currentUser.academicYear ? ` · ${currentUser.academicYear}` : ''}${
+                    currentUser.rollNumber || currentUser.registerNumber ? ' · ' : ''
+                  }`
+                : ''}
+              {currentUser.rollNumber || currentUser.registerNumber}
             </div>
           )}
         </div>

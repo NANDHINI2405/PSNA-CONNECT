@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getTodayIso } from '../services/dataService';
-import { Audience } from '../types';
+import { Audience, canAccessScreen } from '../types';
 
 export function MailMeetingsView() {
   const { currentUser, state, sendMail, markMailRead, createMeeting } = useApp();
@@ -34,7 +34,7 @@ export function MailMeetingsView() {
   const [mUrl, setMUrl] = useState('https://meet.google.com/psna-session');
   const [mAgenda, setMAgenda] = useState('');
 
-  if (!currentUser) return null;
+  if (!currentUser || !canAccessScreen(currentUser, 'mail')) return null;
 
   const canCreateMeeting = currentUser.role === 'staff' || currentUser.role === 'management';
 

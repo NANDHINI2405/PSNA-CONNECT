@@ -3,6 +3,7 @@ import {
   AlertCircle,
   BedDouble,
   CheckCircle2,
+  Clock,
   Edit3,
   Home,
   MessageSquare,
@@ -10,6 +11,7 @@ import {
   Search,
   ShieldAlert,
   Utensils,
+  XCircle,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { getTodayDayName, getTodayIso } from '../services/dataService';
@@ -18,6 +20,8 @@ import {
   HostelMenu,
   HostelStatus,
   HostelType,
+  RequestStatus,
+  canAccessScreen,
   getDefaultBlockForHostel,
   getUserGender,
   getUserHostelType,
@@ -35,13 +39,23 @@ const DAYS: DayOfWeek[] = [
 
 export function HostelView() {
   const { currentUser } = useApp();
-  if (!currentUser) return null;
+  if (!canAccessScreen(currentUser, 'hostel')) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center">
+        <ShieldAlert className="w-10 h-10 text-slate-400 mx-auto mb-3" />
+        <h2 className="text-lg font-semibold text-slate-900">Hostel Access Restricted</h2>
+        <p className="text-sm text-slate-600 mt-1">
+          The Hostel module is accessible only to Hostel Residents, Wardens, and Management.
+        </p>
+      </div>
+    );
+  }
 
-  if (currentUser.isWarden || currentUser.role === 'management') {
+  if (currentUser && (currentUser.isWarden || currentUser.role === 'management')) {
     return <WardenHostelConsole />;
   }
 
-  if (currentUser.isHostel) {
+  if (currentUser && currentUser.isHostel) {
     return <ResidentHostelView />;
   }
 
@@ -387,6 +401,7 @@ function WardenHostelConsole() {
     allotResidentRoom,
     createHostelRoom,
     updateUserPrivateInfo,
+    reviewApprovalRequest,
   } = useApp();
 
   const isManagement = currentUser?.role === 'management';
@@ -396,7 +411,11 @@ function WardenHostelConsole() {
   const [wingFilter, setWingFilter] = useState<'All' | HostelType>(wardenHostelType || 'All');
   const activeWingFilter: 'All' | HostelType = wardenHostelType || wingFilter;
 
-  const [tab, setTab] = useState<'residents' | 'rooms' | 'menu' | 'attendance'>('residents');
+  const [tab, setTab] = useState<'residents' | 'rooms' | 'menu' | 'attendance' | 'approvals'>(
+    'residents'
+  );
+  const [approvalStatusFilter, setApprovalStatusFilter] = useState<'All' | RequestStatus>('Pending');
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [selectedResidentUid, setSelectedResidentUid] = useState<string | null>(null);
   const [selectedDay, setSelectedDay] = useState<DayOfWeek>(getTodayDayName());
@@ -440,6 +459,21 @@ function WardenHostelConsole() {
     if (activeWingFilter === 'All') return state.hostelRooms;
     return state.hostelRooms.filter((r) => r.hostelType === activeWingFilter);
   }, [state.hostelRooms, activeWingFilter]);
+
+  const wingApprovals = useMemo(() => {
+    return state.approvalRequests
+      .filter((r) => {
+        if (r.targetQueue !== 'warden') return false;
+        if (activeWingFilter !== 'All' && r.targetHostelType !== activeWingFilter) return false;
+        return true;
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [state.approvalRequests, activeWingFilter]);
+
+  const pendingWingApprovalsCount = useMemo(
+    () => wingApprovals.filter((r) => r.status === 'Pending').length,
+    [wingApprovals]
+  );
 
   const boysWarden = useMemo(
     () => state.users.find((u) => u.isWarden && getUserHostelType(u) === 'Boys Hostel'),
@@ -642,6 +676,13 @@ function WardenHostelConsole() {
                 { id: 'rooms', label: 'Rooms & Allotment' },
                 { id: 'menu', label: 'Menu Editor' },
                 { id: 'attendance', label: 'Daily Attendance' },
+                {
+                  id: 'approvals',
+                  label:
+                    pendingWingApprovalsCount > 0
+                      ? `Approval Queue (${pendingWingApprovalsCount})`
+                      : 'Approval Queue',
+                },
               ] as const
             ).map((t) => (
               <button
@@ -783,8 +824,15 @@ function WardenHostelConsole() {
                       {selectedResident.name}
                     </h3>
                     <div className="text-sm text-slate-600 mt-0.5">
+                      {selectedResident.programLevel
+                        ? `${selectedResident.programLevel}${
+                            selectedResident.academicYear ? ` · ${selectedResident.academicYear}` : ''
+                          } · `
+                        : ''}
                       {selectedResident.className} · {selectedResident.department} ·{' '}
-                      <span className="font-mono tabular-nums">{selectedResident.registerNumber}</span>
+                      <span className="font-mono tabular-nums">
+                        {selectedResident.rollNumber || selectedResident.registerNumber}
+                      </span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 self-start">
@@ -1379,6 +1427,170 @@ function WardenHostelConsole() {
               );
             })}
           </div>
+        </section>
+      )}
+
+      {tab === 'approvals' && (
+        <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">
+                {activeWingFilter === 'All'
+                  ? 'Hostel Resident Approval Queue'
+                  : `${activeWingFilter} Resident Approval Queue`}
+              </h3>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Hostel admission requests route strictly to the Warden of the applicant&apos;s hostel wing.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {(['Pending', 'Approved', 'Rejected', 'All'] as const).map((st) => (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => setApprovalStatusFilter(st)}
+                  className={`min-h-[34px] px-3 py-1 rounded-xl border text-xs font-medium transition-colors ${
+                    approvalStatusFilter === st
+                      ? 'border-blue-600 bg-blue-50 text-blue-700'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {st}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {(() => {
+            const visibleReqs = wingApprovals.filter((r) =>
+              approvalStatusFilter === 'All' ? true : r.status === approvalStatusFilter
+            );
+            if (visibleReqs.length === 0) {
+              return (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  No {approvalStatusFilter === 'All' ? '' : approvalStatusFilter.toLowerCase()}{' '}
+                  hostel resident requests in this queue.
+                </div>
+              );
+            }
+            return (
+              <div className="space-y-3">
+                {visibleReqs.map((req) => {
+                  const statusBadge =
+                    req.status === 'Approved'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : req.status === 'Rejected'
+                      ? 'bg-red-50 text-red-700 border-red-200'
+                      : 'bg-amber-50 text-amber-800 border-amber-200';
+                  const StatusIcon =
+                    req.status === 'Approved'
+                      ? CheckCircle2
+                      : req.status === 'Rejected'
+                      ? XCircle
+                      : Clock;
+                  return (
+                    <div
+                      key={req.id}
+                      className="rounded-xl border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-900">
+                            {req.requesterName}
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[11px] font-medium ${statusBadge}`}
+                          >
+                            <StatusIcon className="w-3 h-3" />
+                            <span>{req.status}</span>
+                          </span>
+                          <span className="text-xs text-blue-700 font-medium">
+                            {req.targetHostelType}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {req.requesterRegisterNo ? `${req.requesterRegisterNo} · ` : ''}
+                          {req.requesterEmail} · {req.requesterDepartment} ({req.requesterGender})
+                        </div>
+                        <div className="text-xs text-slate-700 pt-1">{req.reason}</div>
+                        {req.reviewedAt && (
+                          <div className="text-[11px] text-slate-500">
+                            {req.status} by {req.reviewedByName} on{' '}
+                            {new Date(req.reviewedAt).toLocaleString()}
+                            {req.reviewNote ? ` · "${req.reviewNote}"` : ''}
+                          </div>
+                        )}
+                      </div>
+
+                      {req.status === 'Pending' && (
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
+                          <input
+                            type="text"
+                            value={reviewNotes[req.id] || ''}
+                            onChange={(e) =>
+                              setReviewNotes((prev) => ({ ...prev, [req.id]: e.target.value }))
+                            }
+                            placeholder="Optional review note..."
+                            className="h-9 px-3 rounded-lg border border-slate-200 text-xs text-slate-900 w-full sm:w-48"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setFeedback(null);
+                              try {
+                                await reviewApprovalRequest(
+                                  req.id,
+                                  'Approved',
+                                  reviewNotes[req.id]
+                                );
+                                setFeedback({
+                                  type: 'success',
+                                  message: `Approved ${req.requesterName} for ${req.targetHostelType}.`,
+                                });
+                              } catch (err) {
+                                setFeedback({
+                                  type: 'error',
+                                  message: err instanceof Error ? err.message : 'Approval failed.',
+                                });
+                              }
+                            }}
+                            className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setFeedback(null);
+                              try {
+                                await reviewApprovalRequest(
+                                  req.id,
+                                  'Rejected',
+                                  reviewNotes[req.id]
+                                );
+                                setFeedback({
+                                  type: 'success',
+                                  message: `Rejected hostel request for ${req.requesterName}.`,
+                                });
+                              } catch (err) {
+                                setFeedback({
+                                  type: 'error',
+                                  message: err instanceof Error ? err.message : 'Rejection failed.',
+                                });
+                              }
+                            }}
+                            className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-medium"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </section>
       )}
     </div>
